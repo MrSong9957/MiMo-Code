@@ -127,7 +127,69 @@ export function error(message: string) {
 }
 
 export function markdown(text: string): string {
+  const lines = text.split("\n")
+  const result: string[] = []
+  let inCodeBlock = false
+
+  for (const line of lines) {
+    // Fenced code blocks
+    if (line.trimStart().startsWith("```")) {
+      if (inCodeBlock) {
+        result.push(Style.TEXT_NORMAL)
+        inCodeBlock = false
+      } else {
+        result.push(Style.TEXT_DIM)
+        inCodeBlock = true
+      }
+      continue
+    }
+    if (inCodeBlock) {
+      result.push(line)
+      continue
+    }
+
+    // Headings: # / ## / ### → bold cyan
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/)
+    if (headingMatch) {
+      result.push(Style.TEXT_HIGHLIGHT_BOLD + headingMatch[2] + Style.TEXT_NORMAL)
+      continue
+    }
+
+    // Horizontal rule
+    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      result.push(Style.TEXT_DIM + "─".repeat(40) + Style.TEXT_NORMAL)
+      continue
+    }
+
+    // List items: - / * / 1. → bullet
+    const listMatch = line.match(/^(\s*)([-*]|\d+\.)\s+(.+)$/)
+    if (listMatch) {
+      const indent = listMatch[1]
+      const bullet = listMatch[2] === "-" || listMatch[2] === "*" ? "•" : listMatch[2]
+      const content = inlineFormat(listMatch[3])
+      result.push(indent + Style.TEXT_HIGHLIGHT + bullet + Style.TEXT_NORMAL + " " + content)
+      continue
+    }
+
+    // Regular line with inline formatting
+    result.push(inlineFormat(line))
+  }
+
+  return result.join(EOL)
+}
+
+function inlineFormat(text: string): string {
   return text
+    // Bold: **text** → bold
+    .replace(/\*\*(.+?)\*\*/g, Style.TEXT_NORMAL_BOLD + "$1" + Style.TEXT_NORMAL)
+    // Italic: *text* → dim italic (ANSI 3 = italic)
+    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "\x1b[3m$1\x1b[23m")
+    // Inline code: `text` → highlight
+    .replace(/`([^`]+)`/g, Style.TEXT_HIGHLIGHT + "$1" + Style.TEXT_NORMAL)
+    // Links: [text](url) → text (url)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, Style.TEXT_HIGHLIGHT + "$1" + Style.TEXT_NORMAL + " ($2)")
+    // Bare URLs: http(s)://... → highlight
+    .replace(/(https?:\/\/[^\s<>()`"']+)/g, Style.TEXT_HIGHLIGHT + "$1" + Style.TEXT_NORMAL)
 }
 
 export * as UI from "./ui"
