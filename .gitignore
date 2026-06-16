@@ -30,9 +30,11 @@ logs/
 *.bun-build
 tsconfig.tsbuildinfo
 .dev-home/
+docker/
 
 # Local agent harness state
 .claude/
+CLAUDE.local.md
 *.pid
 .mimo-worktrees
 .mimocode/
