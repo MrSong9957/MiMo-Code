@@ -1,38 +1,42 @@
 import { describe, expect, test } from "bun:test"
-import {
-  MARKETPLACE_PLUGINS,
-  TYPE_FOOTER,
-  marketplaceOption,
-} from "../../../../src/cli/cmd/tui/feature-plugins/system/plugins"
+import { parseMarketplaceJson } from "../../../../src/cli/cmd/tui/feature-plugins/system/marketplace"
 
-describe("marketplace type footer", () => {
-  test("maps each plugin type to its footer label", () => {
-    expect(TYPE_FOOTER.skill).toBe("[SKILL]")
-    expect(TYPE_FOOTER.mcp).toBe("[MCP]")
-    expect(TYPE_FOOTER.both).toBe("[SKILL+MCP]")
-  })
-})
-
-describe("marketplaceOption", () => {
-  test("maps an entry to a DialogSelectOption with footer from its type", () => {
-    const entry = MARKETPLACE_PLUGINS[0]
-    const option = marketplaceOption(entry)
-
-    expect(option.title).toBe(entry.name)
-    expect(option.value).toBe(entry.name)
-    expect(option.description).toBe(entry.description)
-    expect(option.footer).toBe(TYPE_FOOTER[entry.type])
+describe("parseMarketplaceJson", () => {
+  test("maps entries to name + description", () => {
+    const raw = JSON.stringify({
+      name: "claude-plugins-official",
+      plugins: [
+        { name: "frontend-design", description: "Build distinctive UI" },
+        { name: "pdf", description: "Generate PDF documents" },
+      ],
+    })
+    expect(parseMarketplaceJson(raw)).toEqual([
+      { name: "frontend-design", description: "Build distinctive UI" },
+      { name: "pdf", description: "Generate PDF documents" },
+    ])
   })
 
-  test("leaves category undefined so the list stays flat", () => {
-    const option = marketplaceOption(MARKETPLACE_PLUGINS[0])
-    expect(option.category).toBeUndefined()
+  test("defaults missing description to empty string", () => {
+    const raw = JSON.stringify({ plugins: [{ name: "no-desc" }] })
+    expect(parseMarketplaceJson(raw)).toEqual([{ name: "no-desc", description: "" }])
   })
 
-  test("covers all three plugin types in the sample data", () => {
-    const types = new Set(MARKETPLACE_PLUGINS.map((p) => p.type))
-    expect(types.has("skill")).toBe(true)
-    expect(types.has("mcp")).toBe(true)
-    expect(types.has("both")).toBe(true)
+  test("filters out entries without a name", () => {
+    const raw = JSON.stringify({
+      plugins: [
+        { description: "has no name field" },
+        { name: "valid", description: "ok" },
+      ],
+    })
+    expect(parseMarketplaceJson(raw)).toEqual([{ name: "valid", description: "ok" }])
+  })
+
+  test("returns empty array when plugins array is empty", () => {
+    const raw = JSON.stringify({ plugins: [] })
+    expect(parseMarketplaceJson(raw)).toEqual([])
+  })
+
+  test("throws on invalid JSON", () => {
+    expect(() => parseMarketplaceJson("not json")).toThrow()
   })
 })
