@@ -3,8 +3,9 @@ import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiPluginStatus } from "
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { fileURLToPath } from "url"
 import { DialogSelect, type DialogSelectOption } from "@tui/ui/dialog-select"
-import { Show, createEffect, createMemo, createSignal } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, onMount } from "solid-js"
 import { useLanguage } from "@tui/context/language"
+import { loadMarketplace, type MarketplacePlugin } from "./marketplace"
 
 const id = "internal:plugin-manager"
 const key = Keybind.parse("space").at(0)
@@ -36,46 +37,6 @@ function meta(item: TuiPluginStatus, width: number) {
   const next = source(item.spec)
   if (next) return next
   return item.spec
-}
-
-// --- Marketplace (static sample data) ---
-
-export type PluginType = "skill" | "mcp" | "both"
-
-export const TYPE_FOOTER: Record<PluginType, string> = {
-  skill: "[SKILL]",
-  mcp: "[MCP]",
-  both: "[SKILL+MCP]",
-}
-
-export interface MarketplaceEntry {
-  name: string
-  description: string
-  type: PluginType
-}
-
-export const MARKETPLACE_PLUGINS: MarketplaceEntry[] = [
-  { name: "frontend-design", description: "Build distinctive UI with intentional design", type: "skill" },
-  { name: "pdf", description: "Generate and process PDF documents", type: "skill" },
-  { name: "brainstorming", description: "Turn ideas into validated designs", type: "skill" },
-  { name: "rust-analyzer-lsp", description: "Rust language server integration", type: "both" },
-  { name: "git-workflow", description: "Automate git operations and PRs", type: "skill" },
-  { name: "42crunch", description: "API security scanning and audit", type: "mcp" },
-  { name: "playwright", description: "Browser automation and E2E testing", type: "mcp" },
-  { name: "context7", description: "Look up library docs in real-time", type: "mcp" },
-  { name: "sequential-thinking", description: "Structured multi-step reasoning", type: "both" },
-  { name: "docx", description: "Create and edit Word documents", type: "skill" },
-  { name: "mcp-builder", description: "Build MCP servers for new capabilities", type: "both" },
-  { name: "airtable", description: "Interact with Airtable bases", type: "mcp" },
-]
-
-export function marketplaceOption(entry: MarketplaceEntry): DialogSelectOption<string> {
-  return {
-    title: entry.name,
-    value: entry.name,
-    description: entry.description,
-    footer: TYPE_FOOTER[entry.type],
-  }
 }
 
 function Install(props: { api: TuiPluginApi }) {
@@ -284,6 +245,12 @@ function show(api: TuiPluginApi) {
 function MarketplaceView(props: { api: TuiPluginApi }) {
   const size = useTerminalDimensions()
 
+  const [state, setState] = createSignal<
+    | { status: "loading" }
+    | { status: "ready"; plugins: MarketplacePlugin[] }
+    | { status: "error"; message: string }
+  >({ status: "loading" })
+
   createEffect(() => {
     const width = size().width
     if (width >= 128) {
@@ -297,15 +264,77 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     props.api.ui.dialog.setSize("medium")
   })
 
-  const rows = createMemo(() => MARKETPLACE_PLUGINS.map(marketplaceOption))
+  async function applyResult(result: Awaited<ReturnType<typeof loadMarketplace>>) {
+    if (result.status === "ready") {
+      setState({ status: "ready", plugins: result.plugins })
+    } else {
+      setState({ status: "error", message: result.message })
+    }
+  }
+
+  onMount(async () => {
+    const result = await loadMarketplace()
+    await applyResult(result)
+
+    // 有缓存时，后台静默检查更新（不阻塞、不闪屏、失败忽略）
+    if (result.status === "ready") {
+      const updated = await loadMarketplace({ force: true }).catch(() => undefined)
+      if (updated?.status === "ready") setState({ status: "ready", plugins: updated.plugins })
+    }
+  })
+
+  // r 键刷新（error 态也可用）
+  useKeyboard((evt) => {
+    if (state().status === "error" && evt.name === "r") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      setState({ status: "loading" })
+      void loadMarketplace({ force: true }).then(applyResult)
+    }
+  })
+
+  async function doRefresh() {
+    setState({ status: "loading" })
+    await applyResult(await loadMarketplace({ force: true }))
+  }
+
+  const rows = createMemo(() => {
+    const s = state()
+    if (s.status !== "ready") return []
+    return s.plugins.map((p) => ({
+      title: p.name,
+      value: p.name,
+      description: p.description,
+    }))
+  })
 
   return (
-    <DialogSelect
-      title="Plugin Marketplace"
-      flat
-      options={rows()}
-      keybind={[]}
-    />
+    <Show
+      when={state().status === "ready"}
+      fallback={
+        <box paddingLeft={4} paddingRight={4} paddingTop={2}>
+          <Show
+            when={state().status === "error"}
+            fallback={<text fg={props.api.theme.current.textMuted}>Loading marketplace...</text>}
+          >
+            <text fg={props.api.theme.current.error}>Failed to load marketplace</text>
+            <text fg={props.api.theme.current.textMuted}>Check network, press r to retry</text>
+          </Show>
+        </box>
+      }
+    >
+      <DialogSelect
+        title="Plugin Marketplace"
+        flat
+        options={rows()}
+        onSelect={() =>
+          props.api.ui.toast({ variant: "info", message: "Install coming soon" })
+        }
+        keybind={[
+          { title: "refresh", keybind: Keybind.parse("r").at(0), onTrigger: doRefresh },
+        ]}
+      />
+    </Show>
   )
 }
 
