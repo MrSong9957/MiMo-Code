@@ -293,17 +293,6 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     }
   })
 
-  // r 键刷新（error 态也可用）
-  useKeyboard((evt) => {
-    if (marketState().status === "error" && evt.name === "r") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      setMarketState({ status: "loading" })
-      const myGen = ++gen
-      void loadMarketplace({ force: true }).then((r) => applyResult(r, myGen))
-    }
-  })
-
   async function doRefresh() {
     setMarketState({ status: "loading" })
     const myGen = ++gen
@@ -312,41 +301,37 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
 
   const rows = createMemo(() => {
     const s = marketState()
-    if (s.status !== "ready") return []
-    return s.plugins.map((p) => ({
-      title: p.name,
-      value: p.name,
-      description: p.description,
-    }))
+    if (s.status === "ready") {
+      return s.plugins.map((p) => ({
+        title: p.name,
+        value: p.name,
+        description: p.description,
+      }))
+    }
+    // loading / error：列表区显示一条占位条目，保持界面框架完整
+    const message =
+      s.status === "error" ? `Failed to load: ${s.message}` : "Loading marketplace..."
+    return [
+      {
+        title: message,
+        value: "__status__",
+        onSelect: () => {},
+      },
+    ]
   })
 
   return (
-    <Show
-      when={marketState().status === "ready"}
-      fallback={
-        <box paddingLeft={4} paddingRight={4} paddingTop={2}>
-          <Show
-            when={marketState().status === "error"}
-            fallback={<text fg={props.api.theme.current.textMuted}>Loading marketplace...</text>}
-          >
-            <text fg={props.api.theme.current.error}>Failed to load marketplace</text>
-            <text fg={props.api.theme.current.textMuted}>Check network, press r to retry</text>
-          </Show>
-        </box>
+    <DialogSelect
+      title="Plugin Marketplace"
+      flat
+      options={rows()}
+      onSelect={() =>
+        props.api.ui.toast({ variant: "info", message: "Install coming soon" })
       }
-    >
-      <DialogSelect
-        title="Plugin Marketplace"
-        flat
-        options={rows()}
-        onSelect={() =>
-          props.api.ui.toast({ variant: "info", message: "Install coming soon" })
-        }
-        keybind={[
-          { title: "refresh", keybind: Keybind.parse("r").at(0), onTrigger: doRefresh },
-        ]}
-      />
-    </Show>
+      keybind={[
+        { title: "refresh", keybind: Keybind.parse("r").at(0), onTrigger: doRefresh },
+      ]}
+    />
   )
 }
 
