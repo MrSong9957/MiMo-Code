@@ -281,6 +281,38 @@ function show(api: TuiPluginApi) {
   api.ui.dialog.replace(() => <View api={api} />)
 }
 
+function MarketplaceView(props: { api: TuiPluginApi }) {
+  const size = useTerminalDimensions()
+
+  createEffect(() => {
+    const width = size().width
+    if (width >= 128) {
+      props.api.ui.dialog.setSize("xlarge")
+      return
+    }
+    if (width >= 96) {
+      props.api.ui.dialog.setSize("large")
+      return
+    }
+    props.api.ui.dialog.setSize("medium")
+  })
+
+  const rows = createMemo(() => MARKETPLACE_PLUGINS.map(marketplaceOption))
+
+  return (
+    <DialogSelect
+      title="Plugin Marketplace"
+      flat
+      options={rows()}
+      keybind={[]}
+    />
+  )
+}
+
+function showMarketplace(api: TuiPluginApi) {
+  api.ui.dialog.replace(() => <MarketplaceView api={api} />)
+}
+
 const tui: TuiPlugin = async (api) => {
   api.command.register(() => {
     const t = useLanguage().t
@@ -307,10 +339,7 @@ const tui: TuiPlugin = async (api) => {
         value: "plugins.marketplace",
         category: "system",
         onSelect() {
-          api.ui.toast({
-            variant: "info",
-            message: t("tui.command.plugins.marketplace.placeholder"),
-          })
+          showMarketplace(api)
         },
       },
     ]
