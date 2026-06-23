@@ -38,6 +38,46 @@ function meta(item: TuiPluginStatus, width: number) {
   return item.spec
 }
 
+// --- Marketplace (static sample data) ---
+
+export type PluginType = "skill" | "mcp" | "both"
+
+export const TYPE_FOOTER: Record<PluginType, string> = {
+  skill: "[SKILL]",
+  mcp: "[MCP]",
+  both: "[SKILL+MCP]",
+}
+
+export interface MarketplaceEntry {
+  name: string
+  description: string
+  type: PluginType
+}
+
+export const MARKETPLACE_PLUGINS: MarketplaceEntry[] = [
+  { name: "frontend-design", description: "Build distinctive UI with intentional design", type: "skill" },
+  { name: "pdf", description: "Generate and process PDF documents", type: "skill" },
+  { name: "brainstorming", description: "Turn ideas into validated designs", type: "skill" },
+  { name: "rust-analyzer-lsp", description: "Rust language server integration", type: "both" },
+  { name: "git-workflow", description: "Automate git operations and PRs", type: "skill" },
+  { name: "42crunch", description: "API security scanning and audit", type: "mcp" },
+  { name: "playwright", description: "Browser automation and E2E testing", type: "mcp" },
+  { name: "context7", description: "Look up library docs in real-time", type: "mcp" },
+  { name: "sequential-thinking", description: "Structured multi-step reasoning", type: "both" },
+  { name: "docx", description: "Create and edit Word documents", type: "skill" },
+  { name: "mcp-builder", description: "Build MCP servers for new capabilities", type: "both" },
+  { name: "airtable", description: "Interact with Airtable bases", type: "mcp" },
+]
+
+export function marketplaceOption(entry: MarketplaceEntry): DialogSelectOption<string> {
+  return {
+    title: entry.name,
+    value: entry.name,
+    description: entry.description,
+    footer: TYPE_FOOTER[entry.type],
+  }
+}
+
 function Install(props: { api: TuiPluginApi }) {
   const [global, setGlobal] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
