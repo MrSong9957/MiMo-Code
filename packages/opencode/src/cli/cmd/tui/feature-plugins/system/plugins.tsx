@@ -251,8 +251,8 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     | { status: "error"; message: string }
   >({ status: "loading" })
 
-  // generation guard：防止后台检查/并发刷新用旧结果覆盖新结果（I-1），
-  // 以及组件卸载后仍 setState（I-2）。
+  // generation guard：每次刷新递增 gen，过期请求（gen 不匹配）的结果被丢弃，
+  // 避免后台静默检查覆盖用户刚手动刷新的新数据；卸载时 gen=-1 终止所有回调。
   let gen = 0
   onCleanup(() => {
     gen = -1
@@ -286,7 +286,7 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     applyResult(result, myGen)
 
     // 有缓存时，后台静默检查更新（不阻塞、不闪屏、失败忽略）。
-    // 用独立 gen：用户按 r 刷新时会递增 gen，此后台结果自动作废。
+    // 复用初始 gen=0：若用户已按 r（gen 已递增），此结果自动作废。
     if (result.status === "ready") {
       const updated = await loadMarketplace({ force: true }).catch(() => undefined)
       if (updated?.status === "ready") applyResult(updated, myGen)

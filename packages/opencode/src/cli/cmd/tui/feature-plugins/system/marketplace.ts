@@ -1,4 +1,3 @@
-// marketplace.json 原始条目（只声明用到的字段，其余忽略）
 import path from "path"
 import { Global } from "@/global"
 import { Filesystem } from "@/util"
@@ -8,7 +7,6 @@ interface RawMarketplaceEntry {
   description?: string
 }
 
-// 映射后给视图用的条目
 export interface MarketplacePlugin {
   name: string
   description: string
@@ -38,25 +36,19 @@ export function parseMarketplaceJson(raw: string): MarketplacePlugin[] {
 const MARKETPLACE_URL =
   "https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json"
 const FETCH_TIMEOUT_MS = 15_000
-
-function cachePath() {
-  return path.join(Global.Path.cache, "marketplace.json")
-}
-
-function etagPath() {
-  return path.join(Global.Path.cache, "marketplace.json.etag")
-}
+const CACHE_FILE = path.join(Global.Path.cache, "marketplace.json")
+const ETAG_FILE = path.join(Global.Path.cache, "marketplace.json.etag")
 
 async function readCache(): Promise<{ raw: string; etag?: string } | undefined> {
-  const raw = await Filesystem.readText(cachePath()).catch(() => undefined)
-  if (!raw) return undefined
-  const etag = await Filesystem.readText(etagPath()).catch(() => undefined)
+  const raw = await Filesystem.readText(CACHE_FILE).catch(() => undefined)
+  if (!raw) return
+  const etag = await Filesystem.readText(ETAG_FILE).catch(() => undefined)
   return { raw, etag: etag || undefined }
 }
 
 async function writeCache(raw: string, etag?: string): Promise<void> {
-  await Filesystem.write(cachePath(), raw)
-  if (etag) await Filesystem.write(etagPath(), etag)
+  await Filesystem.write(CACHE_FILE, raw)
+  if (etag) await Filesystem.write(ETAG_FILE, etag)
 }
 
 // 加载市场数据。
