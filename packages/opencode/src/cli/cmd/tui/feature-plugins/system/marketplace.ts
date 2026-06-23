@@ -2,6 +2,9 @@ import path from "path"
 import { Global } from "@/global"
 import { Filesystem } from "@/util"
 
+// 构建时注入的内置 marketplace.json（dev 环境为 undefined，走联网 fetch）
+declare const BUILTIN_MARKETPLACE: string | undefined
+
 interface RawMarketplaceEntry {
   name: string
   description?: string
@@ -62,7 +65,16 @@ export async function loadMarketplace(options?: { force?: boolean }): Promise<Lo
     try {
       return { status: "ready", plugins: parseMarketplaceJson(cache.raw) }
     } catch {
-      // 缓存损坏，当作无缓存继续 fetch
+      // 缓存损坏，当作无缓存继续
+    }
+  }
+
+  // 无缓存：优先用内置版本（构建时注入，离线秒开，不联网）
+  if (typeof BUILTIN_MARKETPLACE !== "undefined") {
+    try {
+      return { status: "ready", plugins: parseMarketplaceJson(BUILTIN_MARKETPLACE) }
+    } catch {
+      // 内置数据损坏（理论不可能），继续联网 fetch
     }
   }
 
