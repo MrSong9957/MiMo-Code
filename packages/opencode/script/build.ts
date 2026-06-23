@@ -49,6 +49,19 @@ const migrations = await Promise.all(
 )
 console.log(`Loaded ${migrations.length} migrations`)
 
+// Fetch builtin marketplace.json to embed in the binary (offline fallback)
+let builtinMarketplace: string | undefined
+try {
+  console.log("Fetching builtin marketplace.json...")
+  const resp = await fetch(
+    "https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json",
+    { signal: AbortSignal.timeout(30_000) },
+  )
+  if (resp.ok) builtinMarketplace = await resp.text()
+} catch (e) {
+  console.warn("Failed to fetch builtin marketplace, skipping:", e)
+}
+
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
@@ -234,6 +247,7 @@ for (const item of targets) {
     define: {
       MIMOCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MIGRATIONS: JSON.stringify(migrations),
+      BUILTIN_MARKETPLACE: builtinMarketplace ? JSON.stringify(builtinMarketplace) : "undefined",
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
       MIMOCODE_CHANNEL: `'${Script.channel}'`,
