@@ -363,6 +363,8 @@ export const dict = {
   "tui.command.tips.toggle.hide": "隱藏 Tips",
   "tui.command.plugins.list.title": "外掛",
   "tui.command.plugins.install.title": "安裝外掛",
+  "tui.command.plugins.marketplace.title": "外掛市集",
+  "tui.command.plugins.marketplace.placeholder": "外掛市集開發中",
 
   // Question i18n — plan_exit
   "tui.question.plan_exit.question": "{{plan}} 的計劃已完成。是否切換到 build 智慧代理開始實作？",

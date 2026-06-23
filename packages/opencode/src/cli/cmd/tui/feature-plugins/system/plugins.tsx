@@ -262,6 +262,17 @@ const tui: TuiPlugin = async (api) => {
           showInstall(api)
         },
       },
+      {
+        title: t("tui.command.plugins.marketplace.title"),
+        value: "plugins.marketplace",
+        category: "system",
+        onSelect() {
+          api.ui.toast({
+            variant: "info",
+            message: t("tui.command.plugins.marketplace.placeholder"),
+          })
+        },
+      },
     ]
   })
 }

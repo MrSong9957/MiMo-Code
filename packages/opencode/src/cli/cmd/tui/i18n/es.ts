@@ -436,6 +436,8 @@ export const dict = {
   "tui.command.tips.toggle.hide": "Ocultar sugerencias",
   "tui.command.plugins.list.title": "Plugins",
   "tui.command.plugins.install.title": "Instalar plugin",
+  "tui.command.plugins.marketplace.title": "Mercado de plugins",
+  "tui.command.plugins.marketplace.placeholder": "El mercado de plugins está en desarrollo",
 
   // Question i18n — plan_exit
   "tui.question.plan_exit.question": "El plan en {{plan}} está completo. ¿Desea cambiar al agente build para comenzar la implementación?",
