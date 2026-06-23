@@ -3,9 +3,9 @@ import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiPluginStatus } from "
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { fileURLToPath } from "url"
 import { DialogSelect, type DialogSelectOption } from "@tui/ui/dialog-select"
-import { Show, createEffect, createMemo, createSignal, onMount } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { useLanguage } from "@tui/context/language"
-import { loadMarketplace, type MarketplacePlugin } from "./marketplace"
+import { loadMarketplace, type LoadResult, type MarketplacePlugin } from "./marketplace"
 
 const id = "internal:plugin-manager"
 const key = Keybind.parse("space").at(0)
@@ -245,11 +245,18 @@ function show(api: TuiPluginApi) {
 function MarketplaceView(props: { api: TuiPluginApi }) {
   const size = useTerminalDimensions()
 
-  const [state, setState] = createSignal<
+  const [marketState, setMarketState] = createSignal<
     | { status: "loading" }
     | { status: "ready"; plugins: MarketplacePlugin[] }
     | { status: "error"; message: string }
   >({ status: "loading" })
+
+  // generation guard：防止后台检查/并发刷新用旧结果覆盖新结果（I-1），
+  // 以及组件卸载后仍 setState（I-2）。
+  let gen = 0
+  onCleanup(() => {
+    gen = -1
+  })
 
   createEffect(() => {
     const width = size().width
@@ -264,42 +271,47 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     props.api.ui.dialog.setSize("medium")
   })
 
-  async function applyResult(result: Awaited<ReturnType<typeof loadMarketplace>>) {
+  function applyResult(result: LoadResult, expected: number) {
+    if (gen !== expected) return
     if (result.status === "ready") {
-      setState({ status: "ready", plugins: result.plugins })
+      setMarketState({ status: "ready", plugins: result.plugins })
     } else {
-      setState({ status: "error", message: result.message })
+      setMarketState({ status: "error", message: result.message })
     }
   }
 
   onMount(async () => {
+    const myGen = gen
     const result = await loadMarketplace()
-    await applyResult(result)
+    applyResult(result, myGen)
 
-    // 有缓存时，后台静默检查更新（不阻塞、不闪屏、失败忽略）
+    // 有缓存时，后台静默检查更新（不阻塞、不闪屏、失败忽略）。
+    // 用独立 gen：用户按 r 刷新时会递增 gen，此后台结果自动作废。
     if (result.status === "ready") {
       const updated = await loadMarketplace({ force: true }).catch(() => undefined)
-      if (updated?.status === "ready") setState({ status: "ready", plugins: updated.plugins })
+      if (updated?.status === "ready") applyResult(updated, myGen)
     }
   })
 
   // r 键刷新（error 态也可用）
   useKeyboard((evt) => {
-    if (state().status === "error" && evt.name === "r") {
+    if (marketState().status === "error" && evt.name === "r") {
       evt.preventDefault()
       evt.stopPropagation()
-      setState({ status: "loading" })
-      void loadMarketplace({ force: true }).then(applyResult)
+      setMarketState({ status: "loading" })
+      const myGen = ++gen
+      void loadMarketplace({ force: true }).then((r) => applyResult(r, myGen))
     }
   })
 
   async function doRefresh() {
-    setState({ status: "loading" })
-    await applyResult(await loadMarketplace({ force: true }))
+    setMarketState({ status: "loading" })
+    const myGen = ++gen
+    applyResult(await loadMarketplace({ force: true }), myGen)
   }
 
   const rows = createMemo(() => {
-    const s = state()
+    const s = marketState()
     if (s.status !== "ready") return []
     return s.plugins.map((p) => ({
       title: p.name,
@@ -310,11 +322,11 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
 
   return (
     <Show
-      when={state().status === "ready"}
+      when={marketState().status === "ready"}
       fallback={
         <box paddingLeft={4} paddingRight={4} paddingTop={2}>
           <Show
-            when={state().status === "error"}
+            when={marketState().status === "error"}
             fallback={<text fg={props.api.theme.current.textMuted}>Loading marketplace...</text>}
           >
             <text fg={props.api.theme.current.error}>Failed to load marketplace</text>
