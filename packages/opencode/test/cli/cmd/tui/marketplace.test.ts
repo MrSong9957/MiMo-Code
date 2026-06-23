@@ -39,4 +39,19 @@ describe("parseMarketplaceJson", () => {
   test("throws on invalid JSON", () => {
     expect(() => parseMarketplaceJson("not json")).toThrow()
   })
+
+  test("filters out null entries without throwing", () => {
+    const raw = JSON.stringify({ plugins: [{ name: "valid", description: "ok" }, null] })
+    expect(parseMarketplaceJson(raw)).toEqual([{ name: "valid", description: "ok" }])
+  })
+
+  test("treats non-array plugins as empty", () => {
+    const raw = JSON.stringify({ plugins: "not-an-array" })
+    expect(parseMarketplaceJson(raw)).toEqual([])
+  })
+
+  test("defaults non-string description to empty", () => {
+    const raw = JSON.stringify({ plugins: [{ name: "x", description: 42 }] })
+    expect(parseMarketplaceJson(raw)).toEqual([{ name: "x", description: "" }])
+  })
 })
