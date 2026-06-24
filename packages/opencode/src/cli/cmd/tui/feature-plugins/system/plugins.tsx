@@ -1,4 +1,7 @@
+import path from "path"
 import { Keybind } from "@/util"
+import { Filesystem } from "@/util"
+import { Global } from "@/global"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiPluginStatus } from "@mimo-ai/plugin/tui"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { fileURLToPath } from "url"
@@ -258,6 +261,21 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     return s.status === "ready" ? s.plugins : []
   })
 
+  // 已装标记：name → 是否已安装（目录存在即已装，与下载器的 skip 判定一致）
+  const [installed, setInstalled] = createSignal<Record<string, boolean>>({})
+
+  // 对市场列表逐个检查目录是否存在，得到已装映射
+  async function refreshInstalled() {
+    const pluginsDir = path.join(Global.Path.data, "plugins")
+    const list = plugins()
+    const checks = await Promise.all(
+      list.map(async (p) => [p.name, await Filesystem.exists(path.join(pluginsDir, p.name))] as const),
+    )
+    const next: Record<string, boolean> = {}
+    for (const [name, ok] of checks) next[name] = ok
+    setInstalled(next)
+  }
+
   // generation guard：每次刷新递增 gen，过期请求（gen 不匹配）的结果被丢弃，
   // 避免后台静默检查覆盖用户刚手动刷新的新数据；卸载时 gen=-1 终止所有回调。
   let gen = 0
@@ -282,6 +300,7 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     if (gen !== expected) return
     if (result.status === "ready") {
       setMarketState({ status: "ready", plugins: result.plugins })
+      void refreshInstalled()
     } else {
       setMarketState({ status: "error", message: result.message })
     }
@@ -325,6 +344,7 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
         return
       }
       props.api.ui.toast({ variant: "success", message: `已安装 ${plugin.name}，重启后生效` })
+      void refreshInstalled()
     } catch (error) {
       // 兜底：downloadPlugin 内部已捕获已知错误并返回 { ok:false }，
       // 这里防御未预期异常，避免 installing 信号卡死或 TUI 崩溃
@@ -337,11 +357,13 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
 
   const rows = createMemo(() => {
     const s = marketState()
+    const mark = installed()
     if (s.status === "ready") {
       return s.plugins.map((p) => ({
         title: p.name,
         value: p.name,
         description: p.description,
+        footer: mark[p.name] ? <text fg={props.api.theme.current.success}>✓ installed</text> : undefined,
       }))
     }
     // loading / error：列表区显示一条占位条目，保持界面框架完整
@@ -377,7 +399,7 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
         void doInstall(plugin)
       }}
       keybind={[
-        { title: "refresh", keybind: Keybind.parse("r").at(0), onTrigger: doRefresh },
+        { title: "refresh", keybind: Keybind.parse("ctrl+r").at(0), onTrigger: doRefresh },
       ]}
     />
   )
