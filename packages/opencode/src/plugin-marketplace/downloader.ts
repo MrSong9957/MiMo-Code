@@ -4,49 +4,19 @@ import { Global } from "@/global"
 import { Filesystem } from "@/util"
 import { Flock } from "@mimo-ai/shared/util/flock"
 
-// 本轮硬编码的 marketplace 仓库（多市场支持留后续）
 const MARKETPLACE_OWNER = "anthropics"
 const MARKETPLACE_REPO = "claude-plugins-official"
 const MARKETPLACE_REF = "main"
 
 const FETCH_TIMEOUT_MS = 30_000
-// 单文件下载失败时的重试次数（含首次共 MAX_RETRIES+1 次尝试）
 const MAX_RETRIES = 3
 
-// 带重试的单文件 fetch：网络偶发 ECONNRESET 时自动重试，指数退避。
-// 全部失败才抛出最后一次的错误。
-async function fetchWithRetry(
-  url: string,
-  dep: DownloadDeps,
-): Promise<Response> {
-  let lastError: unknown
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      // 指数退避：500ms → 1s → 2s
-      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)))
-    }
-    try {
-      const resp = await dep.fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
-      if (resp.ok) return resp
-      // 4xx 不重试（404 永远 404），5xx 重试
-      if (resp.status < 500) return resp
-      lastError = new Error(`HTTP ${resp.status}`)
-    } catch (error) {
-      lastError = error
-    }
-  }
-  throw lastError
-}
-
 export type DownloadDeps = {
-  // 只要求可调用签名，不依赖 Bun fetch 的 preconnect 等扩展方法
   fetch: (url: string | URL | Request, init?: RequestInit) => Promise<Response>
   write: (file: string, data: Uint8Array) => Promise<void>
   exists: (file: string) => Promise<boolean>
-  // 删除目录（递归），用于清理下载中途失败留下的半成品
   remove: (dir: string) => Promise<void>
   pluginsDir: string
-  // 可注入的锁，测试用 no-op；默认用 Flock.acquire（需 Flock global 已初始化）
   lock: (key: string) => Promise<AsyncDisposable>
 }
 
@@ -63,12 +33,6 @@ const defaultDeps: DownloadDeps = {
   lock: (key) => Flock.acquire(`plugin-install:${key}`),
 }
 
-// 标准化 source.path（如 "./plugins/foo"）为仓库内相对路径（"plugins/foo"），用于 tree 过滤和 raw URL
-function repoRelative(source: { kind: "relative"; path: string }) {
-  return source.path.replace(/^\.\//, "")
-}
-
-// Git Trees API 返回的条目
 interface TreeEntry {
   path: string
   type: string
@@ -76,28 +40,35 @@ interface TreeEntry {
 
 interface TreeResponse {
   tree: TreeEntry[]
-  truncated?: boolean
 }
 
-// 下载相对路径型插件到 pluginsDir/<name>/。
-// 跳过式幂等：目标目录已存在则直接返回成功。
+// 单文件 fetch，网络抖动（ECONNRESET）时指数退避重试。4xx 不重试，5xx 才重试。
+async function fetchWithRetry(url: string, dep: DownloadDeps): Promise<Response> {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) await Bun.sleep(500 * 2 ** (attempt - 1))
+    try {
+      const resp = await dep.fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+      if (resp.status < 500) return resp
+      lastError = new Error(`HTTP ${resp.status}`)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError
+}
+
+// 下载相对路径型插件到 pluginsDir/<name>/。跳过式幂等，失败时清理半成品。
 export async function downloadPlugin(
   name: string,
   source: { kind: "relative"; path: string },
   dep: DownloadDeps = defaultDeps,
 ): Promise<DownloadResult> {
   const dir = path.join(dep.pluginsDir, name)
-
-  // 锁必须在存在性检查之前获取：否则两个进程都会看到目录缺失，各自全量下载。
-  // in-process 的并发由调用方的 installing 信号兜底，这里的锁防跨进程。
   try {
     await using _ = await dep.lock(name)
     const result = await runDownload(source, dir, dep)
-    // 下载失败时清理半成品目录，否则下次 exists() 会误判为已装（skipped），
-    // 把残缺的插件当完整的跳过。
-    if (!result.ok) {
-      await dep.remove(dir).catch(() => {})
-    }
+    if (!result.ok) await dep.remove(dir).catch(() => {})
     return result
   } catch (error) {
     return { ok: false, code: "tree_fetch_failed", error }
@@ -109,60 +80,54 @@ async function runDownload(
   dir: string,
   dep: DownloadDeps,
 ): Promise<DownloadResult> {
-  // 持锁后再次检查：可能在等锁期间另一进程已完成安装
-  if (await dep.exists(dir)) {
-    return { ok: true, dir, skipped: true }
-  }
-  const prefix = repoRelative(source)
-  const treesUrl = `https://api.github.com/repos/${MARKETPLACE_OWNER}/${MARKETPLACE_REPO}/git/trees/${MARKETPLACE_REF}?recursive=1`
+  // 持锁后复查：等锁期间可能已被其他进程装好
+  if (await dep.exists(dir)) return { ok: true, dir, skipped: true }
 
-  let resp: Response
-  try {
-    resp = await dep.fetch(treesUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
-  } catch (error) {
-    return { ok: false, code: "tree_fetch_failed", error }
-  }
-  if (!resp.ok) {
-    return { ok: false, code: "tree_fetch_failed", error: new Error(`trees API HTTP ${resp.status}`) }
-  }
+  // source.path 形如 "./plugins/foo"，去掉 "./" 得到仓库内相对路径用于 tree 过滤
+  const prefix = source.path.replace(/^\.\//, "")
+  const blobs = await fetchTree(prefix, dep)
+  if ("ok" in blobs) return blobs
 
-  let data: TreeResponse
-  try {
-    data = (await resp.json()) as TreeResponse
-  } catch (error) {
-    return { ok: false, code: "tree_fetch_failed", error }
-  }
-
-  // 只保留插件目录下的 blob（排除其他插件、排除 tree 节点）
-  const blobs = (data.tree ?? []).filter(
-    (entry) => entry.type === "blob" && entry.path.startsWith(prefix + "/"),
-  )
-  if (!blobs.length) {
-    return { ok: false, code: "no_files" }
-  }
-
-  // 逐文件下载。任一文件重试耗尽后失败即中止。
   for (const entry of blobs) {
     const rawUrl = `https://raw.githubusercontent.com/${MARKETPLACE_OWNER}/${MARKETPLACE_REPO}/${MARKETPLACE_REF}/${entry.path}`
-    // fetch + arrayBuffer + write 整体重试：任一步失败都重下整个文件，避免半包写入
     let buf: Uint8Array
     try {
-      const fileResp = await fetchWithRetry(rawUrl, dep)
-      buf = new Uint8Array(await fileResp.arrayBuffer())
+      buf = new Uint8Array(await (await fetchWithRetry(rawUrl, dep)).arrayBuffer())
     } catch (error) {
       return { ok: false, code: "file_download_failed", error }
     }
-    // 落盘路径：pluginsDir/<name>/<插件内部相对路径>。
-    // entry.path 是仓库内完整路径（如 plugins/foo/skills/x/SKILL.md），
-    // 剥离 prefix（plugins/foo）后得到插件内部相对路径（skills/x/SKILL.md），
-    // 避免 dir 已经是 .../<name> 再拼完整路径造成双层嵌套。
-    const rel = entry.path.slice(prefix.length + 1)
+    // entry.path 是仓库内完整路径（plugins/foo/skills/x/SKILL.md），
+    // 剥离 prefix 后写盘，避免 dir 已含 <name> 再嵌套一层
     try {
-      await dep.write(path.join(dir, rel), buf)
+      await dep.write(path.join(dir, entry.path.slice(prefix.length + 1)), buf)
     } catch (error) {
       return { ok: false, code: "file_download_failed", error }
     }
   }
-
   return { ok: true, dir, skipped: false }
+}
+
+// 拉取仓库文件树，过滤出插件目录下的 blob
+async function fetchTree(
+  prefix: string,
+  dep: DownloadDeps,
+): Promise<TreeEntry[] | DownloadResult> {
+  const treesUrl = `https://api.github.com/repos/${MARKETPLACE_OWNER}/${MARKETPLACE_REPO}/git/trees/${MARKETPLACE_REF}?recursive=1`
+  let resp: Response
+  try {
+    resp = await fetchWithRetry(treesUrl, dep)
+  } catch (error) {
+    return { ok: false, code: "tree_fetch_failed", error }
+  }
+  if (!resp.ok) return { ok: false, code: "tree_fetch_failed", error: new Error(`trees API HTTP ${resp.status}`) }
+
+  let tree: TreeEntry[]
+  try {
+    tree = ((await resp.json()) as TreeResponse).tree ?? []
+  } catch (error) {
+    return { ok: false, code: "tree_fetch_failed", error }
+  }
+
+  const blobs = tree.filter((e) => e.type === "blob" && e.path.startsWith(prefix + "/"))
+  return blobs.length ? blobs : { ok: false, code: "no_files" }
 }

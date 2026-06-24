@@ -181,7 +181,7 @@ export const layer = Layer.effect(
         name: Default.RELOAD_PLUGINS,
         description: "重新加载技能和命令（装完插件后无需重启）",
         source: "command",
-        template: "Reloading skills and commands...",
+        template: "重新加载技能和命令...",
         hints: [],
       }
 

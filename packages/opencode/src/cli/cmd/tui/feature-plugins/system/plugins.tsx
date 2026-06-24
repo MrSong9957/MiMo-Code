@@ -262,27 +262,21 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     return s.status === "ready" ? s.plugins : []
   })
 
-  // 已装标记：name → 是否已安装
-  // 判定标准：目录存在且包含至少一个文件（非空目录才算真安装）。
-  // 不强制 SKILL.md——插件类型多样（Skill / MCP / 命令模板），
-  // 但必须真的下载到了内容，空目录或清理残留不算已装。
+  // 已装标记：name → 是否已安装。判定标准为目录存在且含文件（不强制 SKILL.md，
+  // 因插件类型多样）；空目录或清理残留不算已装，和市场标记/扫描状态对齐。
   const [installed, setInstalled] = createSignal<Record<string, boolean>>({})
 
   async function refreshInstalled() {
     const pluginsDir = path.join(Global.Path.data, "plugins")
-    const list = plugins()
-    const checks = await Promise.all(
-      list.map(async (p) => {
+    const entries = await Promise.all(
+      plugins().map(async (p) => {
         const dir = path.join(pluginsDir, p.name)
         if (!(await Filesystem.isDir(dir))) return [p.name, false] as const
-        // 扫描目录下是否有任何文件（递归一层即可）
         const files = await Glob.scan("**/*", { cwd: dir, include: "file" }).catch(() => [])
         return [p.name, files.length > 0] as const
       }),
     )
-    const next: Record<string, boolean> = {}
-    for (const [name, ok] of checks) next[name] = ok
-    setInstalled(next)
+    setInstalled(Object.fromEntries(entries))
   }
 
   // generation guard：每次刷新递增 gen，过期请求（gen 不匹配）的结果被丢弃，
