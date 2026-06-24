@@ -1,4 +1,5 @@
 import path from "path"
+import { rm } from "fs/promises"
 import { Global } from "@/global"
 import { Filesystem } from "@/util"
 import { Flock } from "@mimo-ai/shared/util/flock"
@@ -15,6 +16,8 @@ export type DownloadDeps = {
   fetch: (url: string | URL | Request, init?: RequestInit) => Promise<Response>
   write: (file: string, data: Uint8Array) => Promise<void>
   exists: (file: string) => Promise<boolean>
+  // 删除目录（递归），用于清理下载中途失败留下的半成品
+  remove: (dir: string) => Promise<void>
   pluginsDir: string
   // 可注入的锁，测试用 no-op；默认用 Flock.acquire（需 Flock global 已初始化）
   lock: (key: string) => Promise<AsyncDisposable>
@@ -28,6 +31,7 @@ const defaultDeps: DownloadDeps = {
   fetch: (url, init) => globalThis.fetch(url, init),
   write: (file, data) => Filesystem.write(file, data),
   exists: (file) => Filesystem.exists(file),
+  remove: (dir) => rm(dir, { recursive: true, force: true }),
   pluginsDir: path.join(Global.Path.data, "plugins"),
   lock: (key) => Flock.acquire(`plugin-install:${key}`),
 }
@@ -61,7 +65,13 @@ export async function downloadPlugin(
   // in-process 的并发由调用方的 installing 信号兜底，这里的锁防跨进程。
   try {
     await using _ = await dep.lock(name)
-    return runDownload(source, dir, dep)
+    const result = await runDownload(source, dir, dep)
+    // 下载失败时清理半成品目录，否则下次 exists() 会误判为已装（skipped），
+    // 把残缺的插件当完整的跳过。
+    if (!result.ok) {
+      await dep.remove(dir).catch(() => {})
+    }
+    return result
   } catch (error) {
     return { ok: false, code: "tree_fetch_failed", error }
   }
