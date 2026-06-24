@@ -333,10 +333,9 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     setInstalling(plugin.name)
     props.api.ui.toast({ variant: "info", message: `正在安装 ${plugin.name}...` })
 
-    // source 由 onSelect 保证为 relative（非 relative 已被拦截）
-    const source = plugin.source as { kind: "relative"; path: string }
+    // source 由 onSelect 保证存在（无 source 已被拦截）
     try {
-      const result = await downloadPlugin(plugin.name, source)
+      const result = await downloadPlugin(plugin.name, plugin.source!)
 
       if (!result.ok) {
         props.api.ui.toast({ variant: "error", message: `安装失败：${result.code}` })
@@ -392,13 +391,6 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
         const plugin = plugins().find((p) => p.name === item.value)
         if (!plugin?.source) {
           props.api.ui.toast({ variant: "info", message: "此插件无来源信息" })
-          return
-        }
-        if (plugin.source.kind !== "relative") {
-          props.api.ui.toast({
-            variant: "warning",
-            message: `暂不支持 ${plugin.source.kind} 格式，仅支持 marketplace 内置插件`,
-          })
           return
         }
         void doInstall(plugin)

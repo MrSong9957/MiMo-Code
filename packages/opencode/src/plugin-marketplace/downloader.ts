@@ -1,8 +1,9 @@
 import path from "path"
-import { rm } from "fs/promises"
+import { rename, rm } from "fs/promises"
 import { Global } from "@/global"
 import { Filesystem } from "@/util"
 import { Flock } from "@mimo-ai/shared/util/flock"
+import type { MarketplaceSource } from "@/cli/cmd/tui/feature-plugins/system/marketplace"
 
 const MARKETPLACE_OWNER = "anthropics"
 const MARKETPLACE_REPO = "claude-plugins-official"
@@ -16,19 +17,27 @@ export type DownloadDeps = {
   write: (file: string, data: Uint8Array) => Promise<void>
   exists: (file: string) => Promise<boolean>
   remove: (dir: string) => Promise<void>
+  // 执行 git 命令，返回是否成功（exit 0）和 stderr
+  git: (args: string[], opts: { cwd: string }) => Promise<{ ok: boolean; stderr: string }>
   pluginsDir: string
   lock: (key: string) => Promise<AsyncDisposable>
 }
 
 export type DownloadResult =
   | { ok: true; dir: string; skipped: boolean }
-  | { ok: false; code: "tree_fetch_failed" | "no_files" | "file_download_failed"; error?: unknown }
+  | { ok: false; code: "tree_fetch_failed" | "no_files" | "file_download_failed" | "git_failed"; error?: unknown }
 
 const defaultDeps: DownloadDeps = {
   fetch: (url, init) => globalThis.fetch(url, init),
   write: (file, data) => Filesystem.write(file, data),
   exists: (file) => Filesystem.exists(file),
   remove: (dir) => rm(dir, { recursive: true, force: true }),
+  git: async (args, opts) => {
+    const proc = Bun.spawn(["git", ...args], { cwd: opts.cwd, stdout: "ignore", stderr: "pipe" })
+    const stderr = await new Response(proc.stderr).text()
+    const ok = (await proc.exited) === 0
+    return { ok, stderr }
+  },
   pluginsDir: path.join(Global.Path.data, "plugins"),
   lock: (key) => Flock.acquire(`plugin-install:${key}`),
 }
@@ -58,20 +67,23 @@ async function fetchWithRetry(url: string, dep: DownloadDeps): Promise<Response>
   throw lastError
 }
 
-// 下载相对路径型插件到 pluginsDir/<name>/。跳过式幂等，失败时清理半成品。
+// 下载插件到 pluginsDir/<name>/。跳过式幂等，失败时清理半成品。
+// relative 型走 Git Trees API 逐文件下载，其余走系统 git clone。
 export async function downloadPlugin(
   name: string,
-  source: { kind: "relative"; path: string },
+  source: MarketplaceSource,
   dep: DownloadDeps = defaultDeps,
 ): Promise<DownloadResult> {
   const dir = path.join(dep.pluginsDir, name)
   try {
     await using _ = await dep.lock(name)
-    const result = await runDownload(source, dir, dep)
+    const result = source.kind === "relative"
+      ? await runDownload(source, dir, dep)
+      : await runGitDownload(source, dir, dep)
     if (!result.ok) await dep.remove(dir).catch(() => {})
     return result
   } catch (error) {
-    return { ok: false, code: "tree_fetch_failed", error }
+    return { ok: false, code: "git_failed", error }
   }
 }
 
@@ -131,3 +143,76 @@ async function fetchTree(
   const blobs = tree.filter((e) => e.type === "blob" && e.path.startsWith(prefix + "/"))
   return blobs.length ? blobs : { ok: false, code: "no_files" }
 }
+
+// git 型 source（url / git-subdir / github）下载。统一用系统 git。
+async function runGitDownload(
+  source: Exclude<MarketplaceSource, { kind: "relative" }>,
+  dir: string,
+  dep: DownloadDeps,
+): Promise<DownloadResult> {
+  if (await dep.exists(dir)) return { ok: true, dir, skipped: true }
+
+  const { url, sha, subdir } = gitSourceParams(source)
+  const sparse = subdir !== undefined
+
+  // 临时 clone 目录
+  const tmp = `${dir}.tmp`
+  await dep.remove(tmp).catch(() => {})
+
+  // git-subdir 用 sparse-checkout 只取子目录，其余整仓库 clone
+  const cloneArgs = ["clone", "--depth", "1"]
+  if (sparse) cloneArgs.push("--filter=blob:none", "--sparse")
+  cloneArgs.push(url, tmp)
+  const clone = await dep.git(cloneArgs, { cwd: dep.pluginsDir })
+  if (!clone.ok) return { ok: false, code: "git_failed", error: new Error(trimGitError(clone.stderr)) }
+
+  if (sparse) {
+    const sc = await dep.git(["sparse-checkout", "set", subdir!], { cwd: tmp })
+    if (!sc.ok) {
+      await dep.remove(tmp).catch(() => {})
+      return { ok: false, code: "git_failed", error: new Error(trimGitError(sc.stderr)) }
+    }
+  }
+
+  // checkout 固定版本。--depth 1 无法直接 clone 到任意 sha，需 fetch 再 checkout。
+  if (sha) {
+    const fetchOk = (await dep.git(["fetch", "--depth", "1", "origin", sha], { cwd: tmp })).ok
+    if (fetchOk) {
+      const co = await dep.git(["checkout", sha], { cwd: tmp })
+      if (!co.ok) {
+        await dep.remove(tmp).catch(() => {})
+        return { ok: false, code: "git_failed", error: new Error(trimGitError(co.stderr)) }
+      }
+    }
+    // fetch 失败则保留 depth 1 最新版（降级，不阻断）
+  }
+
+  // clone 完成后移到最终目录（删 .git 避免 skill 扫描干扰）
+  await dep.remove(path.join(tmp, ".git")).catch(() => {})
+  await dep.remove(dir).catch(() => {})
+  try {
+    await rename(tmp, dir)
+  } catch (error) {
+    await dep.remove(tmp).catch(() => {})
+    return { ok: false, code: "git_failed", error }
+  }
+
+  return { ok: true, dir, skipped: false }
+}
+
+// 从 source 解析 clone 参数
+function gitSourceParams(source: Exclude<MarketplaceSource, { kind: "relative" }>): {
+  url: string
+  sha: string | undefined
+  subdir: string | undefined
+} {
+  if (source.kind === "url") return { url: source.url, sha: source.sha, subdir: undefined }
+  if (source.kind === "github") return { url: `https://github.com/${source.repo}`, sha: source.sha, subdir: undefined }
+  // git-subdir
+  return { url: source.url, sha: source.sha, subdir: source.path }
+}
+
+function trimGitError(stderr: string): string {
+  return stderr.trim().split("\n").filter((l) => !l.startsWith("warning:")).slice(0, 3).join(" ")
+}
+

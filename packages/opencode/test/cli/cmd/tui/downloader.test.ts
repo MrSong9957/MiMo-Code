@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
+import { mkdir, rm } from "fs/promises"
 import { downloadPlugin, type DownloadDeps } from "../../../../src/plugin-marketplace/downloader"
 
 // 把 / 分隔的预期路径转成当前平台分隔符，便于跨平台断言
@@ -11,6 +12,8 @@ function p(file: string): string {
 const noopLock = async (_key: string) => ({ [Symbol.asyncDispose]: async () => {} })
 // no-op 删除，测试不验证清理逻辑的用例用
 const noopRemove = async (_dir: string) => {}
+// no-op git，relative 型测试不走 git
+const noopGit = async (_args: string[], _opts: { cwd: string }) => ({ ok: true, stderr: "" })
 
 describe("downloadPlugin", () => {
   test("filters tree by plugin dir and downloads blobs only", async () => {
@@ -38,6 +41,7 @@ describe("downloadPlugin", () => {
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: noopRemove,
+      git: noopGit,
     }
 
     const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
@@ -69,6 +73,7 @@ describe("downloadPlugin", () => {
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: noopRemove,
+      git: noopGit,
     }
 
     const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
@@ -90,6 +95,7 @@ describe("downloadPlugin", () => {
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: noopRemove,
+      git: noopGit,
     }
 
     const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
@@ -114,6 +120,7 @@ describe("downloadPlugin", () => {
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: noopRemove,
+      git: noopGit,
     }
 
     const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
@@ -138,6 +145,7 @@ describe("downloadPlugin", () => {
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: noopRemove,
+      git: noopGit,
     }
 
     const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
@@ -164,6 +172,7 @@ describe("downloadPlugin", () => {
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: noopRemove,
+      git: noopGit,
     }
 
     // 必须返回 { ok:false } 而非 reject——否则会逃逸成未处理的 Promise 拒绝
@@ -200,6 +209,7 @@ describe("downloadPlugin", () => {
       remove: async (dir) => {
         removed.push(dir)
       },
+      git: noopGit,
     }
 
     // 重试耗尽后失败，且清理了半成品目录（SKILL.md 已写但 README.md 失败）
@@ -230,11 +240,113 @@ describe("downloadPlugin", () => {
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: noopRemove,
+      git: noopGit,
     }
 
     const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
     expect(result.ok).toBe(true)
     // 第一次失败 + 一次重试成功 = 2 次 raw 调用
     expect(rawCall).toBe(2)
+  })
+})
+
+describe("downloadPlugin (git sources)", () => {
+  // 记录 git 调用参数 + 创建假的 tmp 目录让 rename 能成功。remove 用真实的 rm 清理。
+  function mockGit(recorded: string[][], pluginsDir: string, name: string) {
+    return async (args: string[], _opts: { cwd: string }) => {
+      recorded.push(args)
+      if (args[0] === "clone") {
+        await mkdir(path.join(pluginsDir, `${name}.tmp`), { recursive: true })
+      }
+      return { ok: true, stderr: "" }
+    }
+  }
+  const realRemove = (dir: string) => rm(dir, { recursive: true, force: true })
+
+  test("url source clones full repo and checks out sha", async () => {
+    const gitCalls: string[][] = []
+    const pluginsDir = p("/tmp/plugins")
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => false,
+      remove: realRemove,
+      git: mockGit(gitCalls, pluginsDir, "agentforce-adlc"),
+      pluginsDir,
+      lock: noopLock,
+    }
+
+    const result = await downloadPlugin(
+      "agentforce-adlc",
+      { kind: "url", url: "https://github.com/x/y.git", sha: "772aaa20" },
+      deps,
+    )
+    expect(result.ok).toBe(true)
+    expect(gitCalls[0]).toContain("clone")
+    expect(gitCalls[0]).toContain("https://github.com/x/y.git")
+    expect(gitCalls.some((a) => a[0] === "fetch" && a.includes("772aaa20"))).toBe(true)
+    expect(gitCalls.some((a) => a[0] === "checkout" && a.includes("772aaa20"))).toBe(true)
+  })
+
+  test("git-subdir source uses sparse-checkout for subdir", async () => {
+    const gitCalls: string[][] = []
+    const pluginsDir = p("/tmp/plugins")
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => false,
+      remove: realRemove,
+      git: mockGit(gitCalls, pluginsDir, "adobe"),
+      pluginsDir,
+      lock: noopLock,
+    }
+    const result = await downloadPlugin(
+      "adobe",
+      { kind: "git-subdir", url: "https://github.com/adobe/skills.git", path: "plugins/cc/adobe", sha: "17ef6fb5" },
+      deps,
+    )
+    expect(result.ok).toBe(true)
+    expect(gitCalls[0]).toContain("--sparse")
+    const sc = gitCalls.find((a) => a[0] === "sparse-checkout")
+    expect(sc).toBeDefined()
+    expect(sc![1]).toBe("set")
+    expect(sc).toContain("plugins/cc/adobe")
+  })
+
+  test("github source builds url from repo", async () => {
+    const gitCalls: string[][] = []
+    const pluginsDir = p("/tmp/plugins")
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => false,
+      remove: realRemove,
+      git: mockGit(gitCalls, pluginsDir, "fullstory"),
+      pluginsDir,
+      lock: noopLock,
+    }
+    const result = await downloadPlugin(
+      "fullstory",
+      { kind: "github", repo: "fullstorydev/fullstory-skills", sha: "b20614e2" },
+      deps,
+    )
+    expect(result.ok).toBe(true)
+    expect(gitCalls[0]).toContain("https://github.com/fullstorydev/fullstory-skills")
+  })
+
+  test("returns git_failed when clone fails", async () => {
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => false,
+      remove: realRemove,
+      git: async () => ({ ok: false, stderr: "fatal: repository not found" }),
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+    }
+    const result = await downloadPlugin("bad", { kind: "url", url: "https://github.com/x/nonexistent.git" }, deps)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("git_failed")
   })
 })
