@@ -11,6 +11,47 @@ const MARKETPLACE_REF = "main"
 
 const FETCH_TIMEOUT_MS = 30_000
 const MAX_RETRIES = 3
+const GIT_RETRY_MS = 500
+
+// git stderr 中标识"瞬时网络错误"的关键词——这类错误值得重试（国内 GitHub 访问不稳是常态）。
+// 永久错误（not found / authentication failed / could not read Username）不在此列，重试无意义。
+const TRANSIENT_GIT_ERR = [
+  "schannel",
+  "SSL/TLS",
+  "failed to receive handshake",
+  "Connection reset",
+  "RPC failed",
+  "early EOF",
+  "timed out",
+  "Could not resolve host",
+  "Empty reply",
+]
+
+function isTransientGitError(stderr: string): boolean {
+  return TRANSIENT_GIT_ERR.some((kw) => stderr.includes(kw))
+}
+
+// 对瞬时网络错误指数退避重试，永久错误直接返回。返回最后一次结果（成功即成功）。
+// dep.git 仍可能因 cwd 不存在同步抛错，由调用方兜底。
+async function gitWithRetry(
+  args: string[],
+  opts: { cwd: string },
+  dep: DownloadDeps,
+): Promise<{ ok: boolean; stderr: string }> {
+  let result = await dep.git(args, opts)
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    if (result.ok || !isTransientGitError(result.stderr)) return result
+    await Bun.sleep(GIT_RETRY_MS * 2 ** (attempt - 1))
+    result = await dep.git(args, opts)
+  }
+  return result
+}
+
+// 给瞬时网络错误附加中文排查提示，帮助用户自助定位（代理 / SSL backend / DNS）。
+function withNetworkHint(stderr: string): string {
+  if (!isTransientGitError(stderr)) return trimGitError(stderr)
+  return `${trimGitError(stderr)}（可能是网络问题：检查代理设置或 git sslBackend，国内可尝试配置 http.proxy）`
+}
 
 export type DownloadDeps = {
   fetch: (url: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -163,25 +204,25 @@ async function runGitDownload(
   const cloneArgs = ["clone", "--depth", "1"]
   if (sparse) cloneArgs.push("--filter=blob:none", "--sparse")
   cloneArgs.push(url, tmp)
-  const clone = await dep.git(cloneArgs, { cwd: dep.pluginsDir })
-  if (!clone.ok) return { ok: false, code: "git_failed", error: new Error(trimGitError(clone.stderr)) }
+  const clone = await gitWithRetry(cloneArgs, { cwd: dep.pluginsDir }, dep)
+  if (!clone.ok) return { ok: false, code: "git_failed", error: new Error(withNetworkHint(clone.stderr)) }
 
   if (sparse) {
-    const sc = await dep.git(["sparse-checkout", "set", subdir!], { cwd: tmp })
+    const sc = await gitWithRetry(["sparse-checkout", "set", subdir!], { cwd: tmp }, dep)
     if (!sc.ok) {
       await dep.remove(tmp).catch(() => {})
-      return { ok: false, code: "git_failed", error: new Error(trimGitError(sc.stderr)) }
+      return { ok: false, code: "git_failed", error: new Error(withNetworkHint(sc.stderr)) }
     }
   }
 
   // checkout 固定版本。--depth 1 无法直接 clone 到任意 sha，需 fetch 再 checkout。
   if (sha) {
-    const fetchOk = (await dep.git(["fetch", "--depth", "1", "origin", sha], { cwd: tmp })).ok
+    const fetchOk = (await gitWithRetry(["fetch", "--depth", "1", "origin", sha], { cwd: tmp }, dep)).ok
     if (fetchOk) {
-      const co = await dep.git(["checkout", sha], { cwd: tmp })
+      const co = await gitWithRetry(["checkout", sha], { cwd: tmp }, dep)
       if (!co.ok) {
         await dep.remove(tmp).catch(() => {})
-        return { ok: false, code: "git_failed", error: new Error(trimGitError(co.stderr)) }
+        return { ok: false, code: "git_failed", error: new Error(withNetworkHint(co.stderr)) }
       }
     }
     // fetch 失败则保留 depth 1 最新版（降级，不阻断）

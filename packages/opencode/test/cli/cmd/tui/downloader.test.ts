@@ -349,4 +349,88 @@ describe("downloadPlugin (git sources)", () => {
     if (result.ok) return
     expect(result.code).toBe("git_failed")
   })
+
+  // 瞬时网络错误（SSL 握手失败、连接重置、超时）应对齐 fetchWithRetry 的指数退避重试。
+  // 第二次 clone 成功 → 整体成功；且已重试过（stderr 前两次含网络错误特征）。
+  test("retries transient network error (SSL handshake) and succeeds", async () => {
+    const gitCalls: string[] = []
+    const git: DownloadDeps["git"] = async (args) => {
+      const cmd = args[0]
+      if (cmd === "clone") {
+        gitCalls.push("clone")
+        if (gitCalls.length <= 2) {
+          return { ok: false, stderr: "fatal: schannel: failed to receive handshake, SSL/TLS connection failed" }
+        }
+        // 第 3 次（首次重试后）模拟 clone 成功：创建 tmp 目录让后续 rename 能成功
+        await mkdir(path.join(p("/tmp/plugins"), "foo.tmp"), { recursive: true })
+        return { ok: true, stderr: "" }
+      }
+      // 其他子命令直接成功
+      return { ok: true, stderr: "" }
+    }
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => false,
+      remove: realRemove,
+      git,
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+    }
+
+    const result = await downloadPlugin("foo", { kind: "url", url: "https://github.com/x/y.git" }, deps)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.skipped).toBe(false)
+    // 瞬时错误至少重试 1 次（clone 被调用 ≥2 次）
+    expect(gitCalls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  // 永久错误（仓库不存在、认证失败）不应重试，直接失败——避免无意义等待。
+  test("does not retry permanent error (repository not found)", async () => {
+    const gitCalls: string[] = []
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => false,
+      remove: realRemove,
+      git: async (args) => {
+        if (args[0] === "clone") gitCalls.push("clone")
+        return { ok: false, stderr: "fatal: repository 'https://github.com/x/nonexistent.git/' not found" }
+      },
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+    }
+
+    const result = await downloadPlugin("bad", { kind: "url", url: "https://github.com/x/nonexistent.git" }, deps)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("git_failed")
+    // 永久错误：clone 只调用 1 次，没有重试
+    expect(gitCalls).toHaveLength(1)
+  })
+
+  // 网络失败的 error.message 应包含可操作的中文提示，便于用户自助排查。
+  test("network failure error message includes actionable hint", async () => {
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => false,
+      remove: realRemove,
+      git: async () => ({ ok: false, stderr: "fatal: schannel: failed to receive handshake" }),
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+    }
+
+    const result = await downloadPlugin("foo", { kind: "url", url: "https://github.com/x/y.git" }, deps)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("git_failed")
+    const message = result.error instanceof Error ? result.error.message : ""
+    expect(message).toContain("schannel") // 原始错误保留
+    expect(message).toMatch(/网络|代理|proxy/i) // 附带排查提示
+  })
 })

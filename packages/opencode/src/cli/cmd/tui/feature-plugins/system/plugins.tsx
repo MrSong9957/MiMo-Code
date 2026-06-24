@@ -338,7 +338,10 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
       const result = await downloadPlugin(plugin.name, plugin.source!)
 
       if (!result.ok) {
-        props.api.ui.toast({ variant: "error", message: `安装失败：${result.code}` })
+        // 透传 result.error.message（如 schannel 握手失败 + 中文排查提示），
+        // 避免只显示干巴巴的 code 让用户无从下手
+        const detail = result.error instanceof Error ? `：${result.error.message}` : ""
+        props.api.ui.toast({ variant: "error", message: `安装失败：${result.code}${detail}` })
         return
       }
       if (result.skipped) {
