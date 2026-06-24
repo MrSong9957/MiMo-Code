@@ -1,6 +1,7 @@
 import path from "path"
 import { Global } from "@/global"
 import { Filesystem } from "@/util"
+import { isRecord } from "@/util/record"
 
 // 构建时注入的内置 marketplace.json（dev 环境为 undefined，走联网 fetch）
 declare const BUILTIN_MARKETPLACE: string | undefined
@@ -8,11 +9,53 @@ declare const BUILTIN_MARKETPLACE: string | undefined
 interface RawMarketplaceEntry {
   name: string
   description?: string
+  source?: unknown
 }
 
 export interface MarketplacePlugin {
   name: string
   description: string
+  source: MarketplaceSource | undefined
+}
+
+// 解析后的来源描述（discriminated union）。
+// 刻意区别于 shared.ts 的 PluginSource（"file"|"npm"，描述代码插件安装来源）；
+// MarketplaceSource 描述 marketplace.json 条目 source 字段的形态，不可混用。
+export type MarketplaceSource =
+  | { kind: "relative"; path: string }
+  | { kind: "url"; url: string; sha?: string }
+  | { kind: "git-subdir"; url: string; path?: string; sha?: string }
+  | { kind: "github"; repo: string; sha?: string }
+
+// 解析 marketplace.json 条目的 source 字段为 MarketplaceSource。
+// 纯函数，可单测。覆盖 4 种形态 + 无 source / 畸形值兜底 undefined。
+export function parsePluginSource(raw: unknown): MarketplaceSource | undefined {
+  if (typeof raw === "string" && raw.startsWith("./")) {
+    return { kind: "relative", path: raw }
+  }
+  if (!isRecord(raw)) return
+  const kind = raw.source
+  if (typeof kind !== "string") return
+
+  if (kind === "url") {
+    const url = raw.url
+    if (typeof url !== "string") return
+    const sha = typeof raw.sha === "string" ? raw.sha : undefined
+    return { kind: "url", url, sha }
+  }
+  if (kind === "git-subdir") {
+    const url = raw.url
+    if (typeof url !== "string") return
+    const sub = typeof raw.path === "string" ? raw.path : undefined
+    const sha = typeof raw.sha === "string" ? raw.sha : undefined
+    return { kind: "git-subdir", url, path: sub, sha }
+  }
+  if (kind === "github") {
+    const repo = raw.repo
+    if (typeof repo !== "string") return
+    const sha = typeof raw.sha === "string" ? raw.sha : undefined
+    return { kind: "github", repo, sha }
+  }
 }
 
 export type LoadResult =
@@ -33,6 +76,7 @@ export function parseMarketplaceJson(raw: string): MarketplacePlugin[] {
     .map((entry) => ({
       name: entry.name,
       description: typeof entry.description === "string" ? entry.description : "",
+      source: parsePluginSource(entry.source),
     }))
 }
 

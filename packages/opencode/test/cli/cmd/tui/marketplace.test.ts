@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseMarketplaceJson } from "../../../../src/cli/cmd/tui/feature-plugins/system/marketplace"
+import { parseMarketplaceJson, parsePluginSource } from "../../../../src/cli/cmd/tui/feature-plugins/system/marketplace"
 
 describe("parseMarketplaceJson", () => {
   test("maps entries to name + description", () => {
@@ -11,14 +11,14 @@ describe("parseMarketplaceJson", () => {
       ],
     })
     expect(parseMarketplaceJson(raw)).toEqual([
-      { name: "frontend-design", description: "Build distinctive UI" },
-      { name: "pdf", description: "Generate PDF documents" },
+      { name: "frontend-design", description: "Build distinctive UI", source: undefined },
+      { name: "pdf", description: "Generate PDF documents", source: undefined },
     ])
   })
 
   test("defaults missing description to empty string", () => {
     const raw = JSON.stringify({ plugins: [{ name: "no-desc" }] })
-    expect(parseMarketplaceJson(raw)).toEqual([{ name: "no-desc", description: "" }])
+    expect(parseMarketplaceJson(raw)).toEqual([{ name: "no-desc", description: "", source: undefined }])
   })
 
   test("filters out entries without a name", () => {
@@ -28,7 +28,7 @@ describe("parseMarketplaceJson", () => {
         { name: "valid", description: "ok" },
       ],
     })
-    expect(parseMarketplaceJson(raw)).toEqual([{ name: "valid", description: "ok" }])
+    expect(parseMarketplaceJson(raw)).toEqual([{ name: "valid", description: "ok", source: undefined }])
   })
 
   test("returns empty array when plugins array is empty", () => {
@@ -42,7 +42,7 @@ describe("parseMarketplaceJson", () => {
 
   test("filters out null entries without throwing", () => {
     const raw = JSON.stringify({ plugins: [{ name: "valid", description: "ok" }, null] })
-    expect(parseMarketplaceJson(raw)).toEqual([{ name: "valid", description: "ok" }])
+    expect(parseMarketplaceJson(raw)).toEqual([{ name: "valid", description: "ok", source: undefined }])
   })
 
   test("treats non-array plugins as empty", () => {
@@ -52,6 +52,65 @@ describe("parseMarketplaceJson", () => {
 
   test("defaults non-string description to empty", () => {
     const raw = JSON.stringify({ plugins: [{ name: "x", description: 42 }] })
-    expect(parseMarketplaceJson(raw)).toEqual([{ name: "x", description: "" }])
+    expect(parseMarketplaceJson(raw)).toEqual([{ name: "x", description: "", source: undefined }])
+  })
+})
+
+describe("parsePluginSource", () => {
+  test("parses relative path string", () => {
+    expect(parsePluginSource("./plugins/frontend-design")).toEqual({
+      kind: "relative",
+      path: "./plugins/frontend-design",
+    })
+  })
+
+  test("parses url source object", () => {
+    const raw = { source: "url", url: "https://github.com/x/y.git", sha: "abc123" }
+    expect(parsePluginSource(raw)).toEqual({
+      kind: "url",
+      url: "https://github.com/x/y.git",
+      sha: "abc123",
+    })
+  })
+
+  test("parses git-subdir source object", () => {
+    const raw = {
+      source: "git-subdir",
+      url: "https://github.com/x/skills.git",
+      path: "plugins/airtable",
+      ref: "main",
+      sha: "295ab93b",
+    }
+    expect(parsePluginSource(raw)).toEqual({
+      kind: "git-subdir",
+      url: "https://github.com/x/skills.git",
+      path: "plugins/airtable",
+      sha: "295ab93b",
+    })
+  })
+
+  test("parses github source object", () => {
+    const raw = { source: "github", repo: "fullstorydev/fullstory-skills", commit: "1ec5865e" }
+    expect(parsePluginSource(raw)).toEqual({
+      kind: "github",
+      repo: "fullstorydev/fullstory-skills",
+    })
+  })
+
+  test("returns undefined for non-relative string without ./", () => {
+    expect(parsePluginSource("https://example.com/foo")).toBeUndefined()
+    expect(parsePluginSource("plain-name")).toBeUndefined()
+  })
+
+  test("returns undefined for unknown source discriminator", () => {
+    expect(parsePluginSource({ source: "unknown", url: "x" })).toBeUndefined()
+  })
+
+  test("returns undefined for undefined/null/non-record", () => {
+    expect(parsePluginSource(undefined)).toBeUndefined()
+    expect(parsePluginSource(null)).toBeUndefined()
+    expect(parsePluginSource("")).toBeUndefined()
+    expect(parsePluginSource(42)).toBeUndefined()
+    expect(parsePluginSource([])).toBeUndefined()
   })
 })
