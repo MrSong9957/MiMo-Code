@@ -65,6 +65,7 @@ export const Default = {
   DISTILL: "distill",
   GOAL: "goal",
   DEEP_RESEARCH: "deep-research",
+  RELOAD_PLUGINS: "reload-plugins",
 } as const
 
 export function deepResearchTemplate(): string {
@@ -88,6 +89,7 @@ export function deepResearchTemplate(): string {
 export interface Interface {
   readonly get: (name: string) => Effect.Effect<Info | undefined>
   readonly list: () => Effect.Effect<Info[]>
+  readonly reload: () => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Command") {}
@@ -174,6 +176,13 @@ export const layer = Layer.effect(
           return "$ARGUMENTS"
         },
         hints: ["$ARGUMENTS"],
+      }
+      commands[Default.RELOAD_PLUGINS] = {
+        name: Default.RELOAD_PLUGINS,
+        description: "重新加载技能和命令（装完插件后无需重启）",
+        source: "command",
+        template: "Reloading skills and commands...",
+        hints: [],
       }
 
       if (Flag.MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL) {
@@ -263,7 +272,11 @@ export const layer = Layer.effect(
       return Object.values(s.commands)
     })
 
-    return Service.of({ get, list })
+    const reload = Effect.fn("Command.reload")(function* () {
+      yield* InstanceState.invalidate(state)
+    })
+
+    return Service.of({ get, list, reload })
   }),
 )
 

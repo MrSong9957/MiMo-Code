@@ -3128,6 +3128,20 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         yield* goal.set(input.sessionID, condition)
       }
 
+      // /reload-plugins — 刷新 skill + file hooks + 工具表 + 命令列表，不重启进程即可用新装的插件。
+      // 必须先 registry.reload（含 skill），再 command.reload（其重建依赖 skill.all 取新数据）。
+      if (input.command === Command.Default.RELOAD_PLUGINS) {
+        yield* registry.reload()
+        yield* commands.reload()
+        return yield* prompt({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          agent: agentName,
+          parts: [{ type: "text", text: "已重新加载技能和命令", synthetic: true }],
+          noReply: true,
+        })
+      }
+
       const raw = input.arguments.match(argsRegex) ?? []
       const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
       const templateCommand = yield* Effect.promise(async () => cmd.template)
