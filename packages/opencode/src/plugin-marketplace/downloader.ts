@@ -124,8 +124,12 @@ async function runDownload(
     let buf: Uint8Array
     try {
       buf = new Uint8Array(await fileResp.arrayBuffer())
-      // 落盘路径：pluginsDir/<name>/<完整 entry.path>，保留插件在仓库内的目录结构
-      await dep.write(path.join(dir, entry.path), buf)
+      // 落盘路径：pluginsDir/<name>/<插件内部相对路径>。
+      // entry.path 是仓库内完整路径（如 plugins/foo/skills/x/SKILL.md），
+      // 剥离 prefix（plugins/foo）后得到插件内部相对路径（skills/x/SKILL.md），
+      // 避免 dir 已经是 .../<name> 再拼完整路径造成双层嵌套。
+      const rel = entry.path.slice(prefix.length + 1)
+      await dep.write(path.join(dir, rel), buf)
     } catch (error) {
       return { ok: false, code: "file_download_failed", error }
     }

@@ -45,9 +45,10 @@ describe("downloadPlugin", () => {
     expect(result.skipped).toBe(false)
     // trees API 调用 1 次 + 2 个 blob 下载 = 3 次 fetch
     expect(fetched).toHaveLength(3)
+    // 落盘路径剥离仓库前缀：只保留插件内部相对路径（skills/foo/SKILL.md, README.md）
     expect(wrote).toEqual([
-      p("/tmp/plugins/foo/plugins/foo/skills/foo/SKILL.md"),
-      p("/tmp/plugins/foo/plugins/foo/README.md"),
+      p("/tmp/plugins/foo/skills/foo/SKILL.md"),
+      p("/tmp/plugins/foo/README.md"),
     ])
   })
 
