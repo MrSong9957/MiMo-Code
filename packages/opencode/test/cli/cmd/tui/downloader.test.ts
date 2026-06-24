@@ -181,24 +181,20 @@ describe("downloadPlugin", () => {
         { path: "plugins/foo/README.md", type: "blob" },
       ],
     }
-    // 第一个文件写成功（创建目录），第二个 fetch 抛 ECONNRESET
-    let rawCall = 0
+    // 第一个文件成功，第二个文件持续 ECONNRESET（重试也救不回来）
     const removed: string[] = []
-    const existsChecks: string[] = []
     const deps: DownloadDeps = {
       fetch: (async (url: string | URL | Request) => {
         const s = url.toString()
         if (s.includes("/git/trees/")) return Response.json(tree)
-        rawCall++
-        if (rawCall === 2) throw Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" })
+        // README.md 的所有请求都失败（含重试）
+        if (s.endsWith("README.md")) {
+          throw Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" })
+        }
         return new Response("content")
       }) as unknown as DownloadDeps["fetch"],
       write: async () => {},
-      exists: async (file) => {
-        existsChecks.push(file)
-        // 第一次安装：目录不存在；第二次安装：清理后也不存在
-        return false
-      },
+      exists: async () => false,
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: async (dir) => {
@@ -206,12 +202,39 @@ describe("downloadPlugin", () => {
       },
     }
 
-    // 第一次安装：部分成功后失败
+    // 重试耗尽后失败，且清理了半成品目录（SKILL.md 已写但 README.md 失败）
     const r1 = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
     expect(r1.ok).toBe(false)
     if (r1.ok) return
     expect(r1.code).toBe("file_download_failed")
     // 失败后必须清理半成品目录
     expect(removed).toEqual([p("/tmp/plugins/foo")])
+  })
+
+  test("retries transient failure and succeeds", async () => {
+    const tree = {
+      tree: [{ path: "plugins/foo/SKILL.md", type: "blob" }],
+    }
+    // 第一次 ECONNRESET，重试后成功
+    let rawCall = 0
+    const deps: DownloadDeps = {
+      fetch: (async (url: string | URL | Request) => {
+        const s = url.toString()
+        if (s.includes("/git/trees/")) return Response.json(tree)
+        rawCall++
+        if (rawCall === 1) throw Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" })
+        return new Response("content")
+      }) as unknown as DownloadDeps["fetch"],
+      write: async () => {},
+      exists: async () => false,
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+      remove: noopRemove,
+    }
+
+    const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
+    expect(result.ok).toBe(true)
+    // 第一次失败 + 一次重试成功 = 2 次 raw 调用
+    expect(rawCall).toBe(2)
   })
 })

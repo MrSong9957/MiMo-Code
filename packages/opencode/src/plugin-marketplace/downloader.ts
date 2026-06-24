@@ -10,6 +10,33 @@ const MARKETPLACE_REPO = "claude-plugins-official"
 const MARKETPLACE_REF = "main"
 
 const FETCH_TIMEOUT_MS = 30_000
+// 单文件下载失败时的重试次数（含首次共 MAX_RETRIES+1 次尝试）
+const MAX_RETRIES = 3
+
+// 带重试的单文件 fetch：网络偶发 ECONNRESET 时自动重试，指数退避。
+// 全部失败才抛出最后一次的错误。
+async function fetchWithRetry(
+  url: string,
+  dep: DownloadDeps,
+): Promise<Response> {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      // 指数退避：500ms → 1s → 2s
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)))
+    }
+    try {
+      const resp = await dep.fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+      if (resp.ok) return resp
+      // 4xx 不重试（404 永远 404），5xx 重试
+      if (resp.status < 500) return resp
+      lastError = new Error(`HTTP ${resp.status}`)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError
+}
 
 export type DownloadDeps = {
   // 只要求可调用签名，不依赖 Bun fetch 的 preconnect 等扩展方法
@@ -114,31 +141,23 @@ async function runDownload(
     return { ok: false, code: "no_files" }
   }
 
-  // 逐文件下载。任一失败立即中止。
+  // 逐文件下载。任一文件重试耗尽后失败即中止。
   for (const entry of blobs) {
     const rawUrl = `https://raw.githubusercontent.com/${MARKETPLACE_OWNER}/${MARKETPLACE_REPO}/${MARKETPLACE_REF}/${entry.path}`
-    let fileResp: Response
+    // fetch + arrayBuffer + write 整体重试：任一步失败都重下整个文件，避免半包写入
+    let buf: Uint8Array
     try {
-      fileResp = await dep.fetch(rawUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+      const fileResp = await fetchWithRetry(rawUrl, dep)
+      buf = new Uint8Array(await fileResp.arrayBuffer())
     } catch (error) {
       return { ok: false, code: "file_download_failed", error }
     }
-    if (!fileResp.ok) {
-      return {
-        ok: false,
-        code: "file_download_failed",
-        error: new Error(`raw HTTP ${fileResp.status} for ${entry.path}`),
-      }
-    }
-    // arrayBuffer 解析与落盘失败也归为 file_download_failed，避免异常逃逸导致 TUI 崩溃
-    let buf: Uint8Array
+    // 落盘路径：pluginsDir/<name>/<插件内部相对路径>。
+    // entry.path 是仓库内完整路径（如 plugins/foo/skills/x/SKILL.md），
+    // 剥离 prefix（plugins/foo）后得到插件内部相对路径（skills/x/SKILL.md），
+    // 避免 dir 已经是 .../<name> 再拼完整路径造成双层嵌套。
+    const rel = entry.path.slice(prefix.length + 1)
     try {
-      buf = new Uint8Array(await fileResp.arrayBuffer())
-      // 落盘路径：pluginsDir/<name>/<插件内部相对路径>。
-      // entry.path 是仓库内完整路径（如 plugins/foo/skills/x/SKILL.md），
-      // 剥离 prefix（plugins/foo）后得到插件内部相对路径（skills/x/SKILL.md），
-      // 避免 dir 已经是 .../<name> 再拼完整路径造成双层嵌套。
-      const rel = entry.path.slice(prefix.length + 1)
       await dep.write(path.join(dir, rel), buf)
     } catch (error) {
       return { ok: false, code: "file_download_failed", error }
