@@ -2,6 +2,7 @@ import path from "path"
 import { Keybind } from "@/util"
 import { Filesystem } from "@/util"
 import { Global } from "@/global"
+import { Glob } from "@mimo-ai/shared/util/glob"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiPluginStatus } from "@mimo-ai/plugin/tui"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { fileURLToPath } from "url"
@@ -261,15 +262,23 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     return s.status === "ready" ? s.plugins : []
   })
 
-  // 已装标记：name → 是否已安装（目录存在即已装，与下载器的 skip 判定一致）
+  // 已装标记：name → 是否已安装
+  // 判定标准：目录存在且包含至少一个文件（非空目录才算真安装）。
+  // 不强制 SKILL.md——插件类型多样（Skill / MCP / 命令模板），
+  // 但必须真的下载到了内容，空目录或清理残留不算已装。
   const [installed, setInstalled] = createSignal<Record<string, boolean>>({})
 
-  // 对市场列表逐个检查目录是否存在，得到已装映射
   async function refreshInstalled() {
     const pluginsDir = path.join(Global.Path.data, "plugins")
     const list = plugins()
     const checks = await Promise.all(
-      list.map(async (p) => [p.name, await Filesystem.exists(path.join(pluginsDir, p.name))] as const),
+      list.map(async (p) => {
+        const dir = path.join(pluginsDir, p.name)
+        if (!(await Filesystem.isDir(dir))) return [p.name, false] as const
+        // 扫描目录下是否有任何文件（递归一层即可）
+        const files = await Glob.scan("**/*", { cwd: dir, include: "file" }).catch(() => [])
+        return [p.name, files.length > 0] as const
+      }),
     )
     const next: Record<string, boolean> = {}
     for (const [name, ok] of checks) next[name] = ok
