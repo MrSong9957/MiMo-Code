@@ -6,6 +6,7 @@ import { DialogSelect, type DialogSelectOption } from "@tui/ui/dialog-select"
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { useLanguage } from "@tui/context/language"
 import { loadMarketplace, type LoadResult, type MarketplacePlugin } from "./marketplace"
+import { downloadPlugin } from "@/plugin-marketplace/downloader"
 
 const id = "internal:plugin-manager"
 const key = Keybind.parse("space").at(0)
@@ -251,6 +252,12 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     | { status: "error"; message: string }
   >({ status: "loading" })
 
+  const [installing, setInstalling] = createSignal<string | undefined>()
+  const plugins = createMemo(() => {
+    const s = marketState()
+    return s.status === "ready" ? s.plugins : []
+  })
+
   // generation guard：每次刷新递增 gen，过期请求（gen 不匹配）的结果被丢弃，
   // 避免后台静默检查覆盖用户刚手动刷新的新数据；卸载时 gen=-1 终止所有回调。
   let gen = 0
@@ -299,6 +306,28 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     applyResult(await loadMarketplace({ force: true }), myGen)
   }
 
+  async function doInstall(plugin: MarketplacePlugin) {
+    if (installing()) return
+    setInstalling(plugin.name)
+    props.api.ui.toast({ variant: "info", message: `正在安装 ${plugin.name}...` })
+
+    // source 由 onSelect 保证为 relative（非 relative 已被拦截）
+    const source = plugin.source as { kind: "relative"; path: string }
+    const result = await downloadPlugin(plugin.name, source)
+
+    setInstalling(undefined)
+
+    if (!result.ok) {
+      props.api.ui.toast({ variant: "error", message: `安装失败：${result.code}` })
+      return
+    }
+    if (result.skipped) {
+      props.api.ui.toast({ variant: "info", message: `${plugin.name} 已安装，无需重复安装` })
+      return
+    }
+    props.api.ui.toast({ variant: "success", message: `已安装 ${plugin.name}，重启后生效` })
+  }
+
   const rows = createMemo(() => {
     const s = marketState()
     if (s.status === "ready") {
@@ -325,9 +354,21 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
       title="Plugin Marketplace"
       flat
       options={rows()}
-      onSelect={() =>
-        props.api.ui.toast({ variant: "info", message: "Install coming soon" })
-      }
+      onSelect={(item) => {
+        const plugin = plugins().find((p) => p.name === item.value)
+        if (!plugin?.source) {
+          props.api.ui.toast({ variant: "info", message: "此插件无来源信息" })
+          return
+        }
+        if (plugin.source.kind !== "relative") {
+          props.api.ui.toast({
+            variant: "warning",
+            message: `暂不支持 ${plugin.source.kind} 格式，仅支持 marketplace 内置插件`,
+          })
+          return
+        }
+        void doInstall(plugin)
+      }}
       keybind={[
         { title: "refresh", keybind: Keybind.parse("r").at(0), onTrigger: doRefresh },
       ]}
