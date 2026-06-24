@@ -57,26 +57,25 @@ export async function downloadPlugin(
 ): Promise<DownloadResult> {
   const dir = path.join(dep.pluginsDir, name)
 
-  // 跳过式幂等
-  if (await dep.exists(dir)) {
-    return { ok: true, dir, skipped: true }
+  // 锁必须在存在性检查之前获取：否则两个进程都会看到目录缺失，各自全量下载。
+  // in-process 的并发由调用方的 installing 信号兜底，这里的锁防跨进程。
+  try {
+    await using _ = await dep.lock(name)
+    return runDownload(source, dir, dep)
+  } catch (error) {
+    return { ok: false, code: "tree_fetch_failed", error }
   }
-
-  return dep.lock(name).then(
-    async (lockHandle) => {
-      await using _ = lockHandle
-      return runDownload(name, source, dir, dep)
-    },
-    (error: unknown) => ({ ok: false, code: "tree_fetch_failed" as const, error }),
-  )
 }
 
 async function runDownload(
-  name: string,
   source: { kind: "relative"; path: string },
   dir: string,
   dep: DownloadDeps,
 ): Promise<DownloadResult> {
+  // 持锁后再次检查：可能在等锁期间另一进程已完成安装
+  if (await dep.exists(dir)) {
+    return { ok: true, dir, skipped: true }
+  }
   const prefix = repoRelative(source)
   const treesUrl = `https://api.github.com/repos/${MARKETPLACE_OWNER}/${MARKETPLACE_REPO}/git/trees/${MARKETPLACE_REF}?recursive=1`
 
@@ -121,9 +120,15 @@ async function runDownload(
         error: new Error(`raw HTTP ${fileResp.status} for ${entry.path}`),
       }
     }
-    const buf = new Uint8Array(await fileResp.arrayBuffer())
-    // 落盘路径：pluginsDir/<name>/<完整 entry.path>，保留插件在仓库内的目录结构
-    await dep.write(path.join(dir, entry.path), buf)
+    // arrayBuffer 解析与落盘失败也归为 file_download_failed，避免异常逃逸导致 TUI 崩溃
+    let buf: Uint8Array
+    try {
+      buf = new Uint8Array(await fileResp.arrayBuffer())
+      // 落盘路径：pluginsDir/<name>/<完整 entry.path>，保留插件在仓库内的目录结构
+      await dep.write(path.join(dir, entry.path), buf)
+    } catch (error) {
+      return { ok: false, code: "file_download_failed", error }
+    }
   }
 
   return { ok: true, dir, skipped: false }

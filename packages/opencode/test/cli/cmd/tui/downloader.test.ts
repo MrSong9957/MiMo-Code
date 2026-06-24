@@ -138,4 +138,30 @@ describe("downloadPlugin", () => {
     if (result.ok) return
     expect(result.code).toBe("file_download_failed")
   })
+
+  test("returns file_download_failed when write rejects (no unhandled rejection)", async () => {
+    const tree = {
+      tree: [{ path: "plugins/foo/SKILL.md", type: "blob" }],
+    }
+    const deps: DownloadDeps = {
+      fetch: (async (url: string | URL | Request) => {
+        const s = url.toString()
+        if (s.includes("/git/trees/")) return Response.json(tree)
+        return new Response("content")
+      }) as unknown as DownloadDeps["fetch"],
+      write: async () => {
+        throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" })
+      },
+      exists: async () => false,
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+    }
+
+    // 必须返回 { ok:false } 而非 reject——否则会逃逸成未处理的 Promise 拒绝
+    const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("file_download_failed")
+  })
 })

@@ -313,19 +313,26 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
 
     // source 由 onSelect 保证为 relative（非 relative 已被拦截）
     const source = plugin.source as { kind: "relative"; path: string }
-    const result = await downloadPlugin(plugin.name, source)
+    try {
+      const result = await downloadPlugin(plugin.name, source)
 
-    setInstalling(undefined)
-
-    if (!result.ok) {
-      props.api.ui.toast({ variant: "error", message: `安装失败：${result.code}` })
-      return
+      if (!result.ok) {
+        props.api.ui.toast({ variant: "error", message: `安装失败：${result.code}` })
+        return
+      }
+      if (result.skipped) {
+        props.api.ui.toast({ variant: "info", message: `${plugin.name} 已安装，无需重复安装` })
+        return
+      }
+      props.api.ui.toast({ variant: "success", message: `已安装 ${plugin.name}，重启后生效` })
+    } catch (error) {
+      // 兜底：downloadPlugin 内部已捕获已知错误并返回 { ok:false }，
+      // 这里防御未预期异常，避免 installing 信号卡死或 TUI 崩溃
+      const message = error instanceof Error ? error.message : String(error)
+      props.api.ui.toast({ variant: "error", message: `安装失败：${message}` })
+    } finally {
+      setInstalling(undefined)
     }
-    if (result.skipped) {
-      props.api.ui.toast({ variant: "info", message: `${plugin.name} 已安装，无需重复安装` })
-      return
-    }
-    props.api.ui.toast({ variant: "success", message: `已安装 ${plugin.name}，重启后生效` })
   }
 
   const rows = createMemo(() => {
