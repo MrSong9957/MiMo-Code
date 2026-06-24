@@ -334,9 +334,14 @@ describe("downloadPlugin (git sources)", () => {
     expect(gitCalls[0]).toContain("https://github.com/fullstorydev/fullstory-skills")
   })
 
+  // 以下 3 个测试隔离 git 本身的行为：fetch mock 对 codeload tarball 请求返回 404，
+  // 使 tarball 降级也失败，从而专注验证 git 重试/永久错误/错误提示逻辑。
+  const failAllFetch = (async (url: string | URL | Request) =>
+    new Response("", { status: url.toString().includes("codeload.github.com") ? 404 : 200 })) as unknown as DownloadDeps["fetch"]
+
   test("returns git_failed when clone fails", async () => {
     const deps: DownloadDeps = {
-      fetch: async () => new Response(""),
+      fetch: failAllFetch,
       write: async () => {},
       exists: async () => false,
       remove: realRemove,
@@ -369,7 +374,7 @@ describe("downloadPlugin (git sources)", () => {
       return { ok: true, stderr: "" }
     }
     const deps: DownloadDeps = {
-      fetch: async () => new Response(""),
+      fetch: failAllFetch,
       write: async () => {},
       exists: async () => false,
       remove: realRemove,
@@ -391,7 +396,7 @@ describe("downloadPlugin (git sources)", () => {
   test("does not retry permanent error (repository not found)", async () => {
     const gitCalls: string[] = []
     const deps: DownloadDeps = {
-      fetch: async () => new Response(""),
+      fetch: failAllFetch,
       write: async () => {},
       exists: async () => false,
       remove: realRemove,
@@ -415,7 +420,7 @@ describe("downloadPlugin (git sources)", () => {
   // 网络失败的 error.message 应包含可操作的中文提示，便于用户自助排查。
   test("network failure error message includes actionable hint", async () => {
     const deps: DownloadDeps = {
-      fetch: async () => new Response(""),
+      fetch: failAllFetch,
       write: async () => {},
       exists: async () => false,
       remove: realRemove,
@@ -433,4 +438,142 @@ describe("downloadPlugin (git sources)", () => {
     expect(message).toContain("schannel") // 原始错误保留
     expect(message).toMatch(/网络|代理|proxy/i) // 附带排查提示
   })
+
+  // ===== tarball 降级：git clone 因 schannel 失败时，改走 GitHub tarball 下载 =====
+  // 国内 Windows 环境系统 git 的 schannel/openssl 后端常与 GitHub TLS 握手失败，
+  // 但 Bun.fetch 不受影响，走 tarball 可绕过。
+
+  // 用真实 Bun.gzipSync 构造 tar.gz，确保和生产 gunzipSync 解析逻辑闭环。
+  // files: [{ name: "repo-ref/path", content }]
+  function buildTarGz(files: { name: string; content: string }[]): ArrayBuffer {
+    const blocks: Buffer[] = []
+    for (const f of files) {
+      const nameBuf = Buffer.alloc(100)
+      nameBuf.write(f.name.slice(0, 100))
+      const data = Buffer.from(f.content)
+      const header = Buffer.alloc(512)
+      nameBuf.copy(header)
+      header.write("0000644\0", 100) // mode
+      header.write("0000000\0", 108) // uid
+      header.write("0000000\0", 116) // gid
+      header.write(data.length.toString(8).padStart(11, "0") + "\0", 124) // size
+      header.write("00000000000\0", 136) // mtime
+      header.write("        ", 148) // checksum placeholder
+      header.write("0", 156) // typeflag regular file
+      header.write("ustar\0", 257) // magic
+      header.write("00", 263) // version
+      let sum = 0
+      for (let i = 0; i < 512; i++) sum += header[i]
+      header.write(sum.toString(8).padStart(6, "0"), 148)
+      header[154] = 0
+      header[155] = 0x20
+      blocks.push(header, data)
+      const pad = (512 - (data.length % 512)) % 512
+      if (pad > 0) blocks.push(Buffer.alloc(pad))
+    }
+    blocks.push(Buffer.alloc(1024)) // EOF marker
+    return Bun.gzipSync(Buffer.concat(blocks)).buffer as ArrayBuffer
+  }
+
+  test("git clone schannel failure falls back to tarball and succeeds", async () => {
+    const tarball = buildTarGz([
+      { name: "y-main/README.md", content: "# Plugin" },
+      { name: "y-main/skills/foo/SKILL.md", content: "# Foo Skill" },
+    ])
+    const fetchedUrls: string[] = []
+    const wroteFiles: string[] = []
+    const deps: DownloadDeps = {
+      fetch: (async (url: string | URL | Request) => {
+        const s = url.toString()
+        fetchedUrls.push(s)
+        if (s.includes("codeload.github.com")) return new Response(tarball)
+        return new Response("", { status: 404 })
+      }) as unknown as DownloadDeps["fetch"],
+      write: async (file, _data) => {
+        wroteFiles.push(file)
+      },
+      exists: async () => false,
+      remove: realRemove,
+      git: async () => ({ ok: false, stderr: "fatal: schannel: failed to receive handshake" }),
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+    }
+
+    const result = await downloadPlugin("foo", { kind: "github", repo: "x/y" }, deps)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.skipped).toBe(false)
+    // git 失败后确实走了 tarball
+    expect(fetchedUrls.some((u) => u.includes("codeload.github.com"))).toBe(true)
+    // 两个文件都被写入
+    expect(wroteFiles.some((f) => f.endsWith("README.md"))).toBe(true)
+    expect(wroteFiles.some((f) => f.endsWith("SKILL.md"))).toBe(true)
+    // 顶层目录前缀 y-main/ 已剥离，不残留在路径中
+    expect(wroteFiles.every((f) => !f.includes("y-main"))).toBe(true)
+  })
+
+  test("tarball fallback supports subdir (git-subdir source)", async () => {
+    // tarball 含整个仓库，但 git-subdir 只要 plugins/my-plugin/ 下的文件
+    const tarball = buildTarGz([
+      { name: "repo-main/plugins/my-plugin/SKILL.md", content: "# Mine" },
+      { name: "repo-main/plugins/other/SKILL.md", content: "# Other" },
+      { name: "repo-main/README.md", content: "# Root" },
+    ])
+    const wroteFiles: string[] = []
+    const deps: DownloadDeps = {
+      fetch: (async (url: string | URL | Request) => {
+        if (url.toString().includes("codeload.github.com")) return new Response(tarball)
+        return new Response("", { status: 404 })
+      }) as unknown as DownloadDeps["fetch"],
+      write: async (file) => {
+        wroteFiles.push(file)
+      },
+      exists: async () => false,
+      remove: realRemove,
+      git: async () => ({ ok: false, stderr: "fatal: schannel: failed to receive handshake" }),
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+    }
+
+    const result = await downloadPlugin(
+      "my-plugin",
+      { kind: "git-subdir", url: "https://github.com/a/b.git", path: "plugins/my-plugin" },
+      deps,
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // 只写入 subdir 下的文件，仓库其他文件被排除
+    expect(wroteFiles.some((f) => f.endsWith("SKILL.md"))).toBe(true)
+    expect(wroteFiles.every((f) => !f.endsWith("README.md"))).toBe(true) // 根 README 被排除
+    // 写出的相对路径是 my-plugin/SKILL.md（subdir 的最后一段保留），不含 other 子目录
+    expect(wroteFiles.every((f) => !f.includes("other"))).toBe(true)
+  })
+
+  // git 重试(3次)+ tarball fetch 重试(3次)叠加，耗时较长，给足超时
+  test("returns git_failed when both git and tarball fail", async () => {
+    const deps: DownloadDeps = {
+      fetch: (async (url: string | URL | Request) => {
+        // tarball 也彻底失败（5xx 模拟持续网络故障）
+        if (url.toString().includes("codeload.github.com")) return new Response("", { status: 503 })
+        return new Response("", { status: 404 })
+      }) as unknown as DownloadDeps["fetch"],
+      write: async () => {},
+      exists: async () => false,
+      remove: noopRemove,
+      git: async () => ({ ok: false, stderr: "fatal: schannel: failed to receive handshake" }),
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+    }
+
+    const result = await downloadPlugin("foo", { kind: "github", repo: "x/y" }, deps)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("git_failed")
+    // 保留原始 git 错误信息
+    const message = result.error instanceof Error ? result.error.message : ""
+    expect(message).toContain("schannel")
+  }, 15000)
 })

@@ -185,7 +185,8 @@ async function fetchTree(
   return blobs.length ? blobs : { ok: false, code: "no_files" }
 }
 
-// git 型 source（url / git-subdir / github）下载。统一用系统 git。
+// git 型 source（url / git-subdir / github）下载。先用系统 git clone，
+// 因 schannel/openssl TLS 失败时降级走 GitHub tarball（fetch 路径不受 git TLS 后端影响）。
 async function runGitDownload(
   source: Exclude<MarketplaceSource, { kind: "relative" }>,
   dir: string,
@@ -205,8 +206,23 @@ async function runGitDownload(
   if (sparse) cloneArgs.push("--filter=blob:none", "--sparse")
   cloneArgs.push(url, tmp)
   const clone = await gitWithRetry(cloneArgs, { cwd: dep.pluginsDir }, dep)
-  if (!clone.ok) return { ok: false, code: "git_failed", error: new Error(withNetworkHint(clone.stderr)) }
+  if (clone.ok) {
+    return finishGitClone(tmp, dir, sparse, sha, subdir, dep)
+  }
 
+  // git clone 失败（常见：国内 Windows schannel TLS 握手失败）→ 降级 tarball
+  return fallbackTarball(url, sha, subdir, dir, dep, clone.stderr)
+}
+
+// 完成 git clone 后的 sparse-checkout / 版本 checkout / 移动
+async function finishGitClone(
+  tmp: string,
+  dir: string,
+  sparse: boolean,
+  sha: string | undefined,
+  subdir: string | undefined,
+  dep: DownloadDeps,
+): Promise<DownloadResult> {
   if (sparse) {
     const sc = await gitWithRetry(["sparse-checkout", "set", subdir!], { cwd: tmp }, dep)
     if (!sc.ok) {
@@ -239,6 +255,107 @@ async function runGitDownload(
   }
 
   return { ok: true, dir, skipped: false }
+}
+
+// git clone 失败时的降级路径：从 GitHub codeload 拉 tarball，解压写盘。
+// fetch 走和 tree/file 下载相同的网络栈，不受 git 的 schannel/openssl TLS 后端影响。
+async function fallbackTarball(
+  url: string,
+  sha: string | undefined,
+  subdir: string | undefined,
+  dir: string,
+  dep: DownloadDeps,
+  gitStderr: string,
+): Promise<DownloadResult> {
+  const repo = parseGithubRepo(url)
+  // 仅支持 github.com 仓库的 tarball 降级；非 github 仓库无 codeload 端点，直接返回 git 错误
+  if (!repo) return { ok: false, code: "git_failed", error: new Error(withNetworkHint(gitStderr)) }
+
+  // ref 用 sha 精确定位版本，否则用 main
+  const ref = sha ?? "main"
+  const tarballUrl = `https://codeload.github.com/${repo.owner}/${repo.name}/tar.gz/${ref}`
+
+  let resp: Response
+  try {
+    resp = await fetchWithRetry(tarballUrl, dep)
+  } catch (error) {
+    // tarball fetch 也失败 → 返回原始 git 错误（它通常更接近用户认知）
+    return { ok: false, code: "git_failed", error: new Error(withNetworkHint(gitStderr)) }
+  }
+  if (!resp.ok) {
+    return { ok: false, code: "git_failed", error: new Error(withNetworkHint(gitStderr)) }
+  }
+
+  const gz = await resp.arrayBuffer()
+  const files = extractTarEntries(gz)
+  // 剥离 tarball 顶层目录（如 superpowers-main/ 或 repo-<sha>/）
+  for (const f of files) {
+    const rel = stripTopDir(f.name)
+    // git-subdir：只保留 subdir/ 下的文件，并剥离 subdir 前缀
+    const target = subdir ? underSubdir(rel, subdir) : rel
+    if (!target) continue
+    try {
+      await dep.write(path.join(dir, target), f.data)
+    } catch (error) {
+      return { ok: false, code: "git_failed", error }
+    }
+  }
+  return { ok: true, dir, skipped: false }
+}
+
+// 从 https://github.com/<owner>/<name>(.git) 解析出 owner/name；非 github 返回 undefined
+function parseGithubRepo(url: string): { owner: string; name: string } | undefined {
+  const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?(?:[/?#]|$)/)
+  return m ? { owner: m[1], name: m[2] } : undefined
+}
+
+// 剥离路径的第一段（tarball 顶层目录，如 superpowers-main）
+function stripTopDir(p: string): string {
+  const idx = p.indexOf("/")
+  return idx === -1 ? "" : p.slice(idx + 1)
+}
+
+// 若路径以 subdir/ 开头，返回剥离 subdir 后的相对路径；否则返回 undefined（不在子目录内）
+function underSubdir(p: string, subdir: string): string | undefined {
+  const norm = subdir.replace(/^\//, "").replace(/\/$/, "")
+  if (p === norm || p.startsWith(norm + "/")) {
+    const rest = p.slice(norm.length)
+    return rest.startsWith("/") ? rest.slice(1) : rest
+  }
+  return undefined
+}
+
+// 解析 tar.gz 字节流，提取所有普通文件条目（含字节内容）。
+// tar 格式：每条目 512 字节 header + 数据（按 512 对齐）。header 字段：name@0, size@124(octal), type@156
+function extractTarEntries(gz: ArrayBuffer): { name: string; data: Uint8Array }[] {
+  let buf: Uint8Array
+  try {
+    buf = Bun.gunzipSync(new Uint8Array(gz) as Uint8Array<ArrayBuffer>)
+  } catch {
+    return []
+  }
+  const files: { name: string; data: Uint8Array }[] = []
+  let off = 0
+  const dec = new TextDecoder()
+  while (off + 512 <= buf.length) {
+    const name = dec.decode(buf.subarray(off, off + 100)).replace(/\0/g, "")
+    if (!name) {
+      off += 512
+      continue
+    }
+    // ustar 长名前缀（@345），与 name 拼接
+    const prefix = dec.decode(buf.subarray(off + 345, off + 500)).replace(/\0/g, "")
+    const fullName = prefix ? `${prefix}/${name}` : name
+    const sizeStr = dec.decode(buf.subarray(off + 124, off + 135)).replace(/[\0 ]/g, "")
+    const size = parseInt(sizeStr, 8) || 0
+    const type = String.fromCharCode(buf[off + 156])
+    // type "0"/"\0" = 普通文件；"5" = 目录；其他（软链等）跳过
+    if (type === "0" || type === "" || type === "\u0000") {
+      files.push({ name: fullName, data: buf.subarray(off + 512, off + 512 + size) })
+    }
+    off += 512 + Math.ceil(size / 512) * 512
+  }
+  return files
 }
 
 // 从 source 解析 clone 参数
