@@ -363,7 +363,9 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
         title: p.name,
         value: p.name,
         description: p.description,
-        footer: mark[p.name] ? <text fg={props.api.theme.current.success}>✓ installed</text> : undefined,
+        footer: mark[p.name]
+          ? <span style={{ fg: props.api.theme.current.success }}>✓ installed</span>
+          : undefined,
       }))
     }
     // loading / error：列表区显示一条占位条目，保持界面框架完整
