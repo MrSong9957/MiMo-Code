@@ -814,6 +814,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
       },
       bootstrap,
+      // /reload-plugins 后重新拉取命令列表（含新装的 skill 命令）。
+      // 后端 reload 只 invalidate 缓存，前端 store 不会自动更新。
+      reloadCommands() {
+        const workspace = project.workspace.current()
+        void sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? [])))
+      },
       loadWorkflows(sessionID: string) {
         void sdk.client.workflow.list({ sessionID }).then((res) => {
           for (const run of (res.data ?? []) as WorkflowRun[]) setStore("workflow", run.runID, reconcile(run))

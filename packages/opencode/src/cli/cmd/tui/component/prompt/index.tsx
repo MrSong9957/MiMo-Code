@@ -1148,6 +1148,9 @@ export function Prompt(props: PromptProps) {
             id: PartID.ascending(),
             ...x,
           })),
+      }).then(() => {
+        // reload-plugins 刷新后端缓存后，前端命令列表也需要重新拉取
+        if (command.slice(1) === "reload-plugins") sync.reloadCommands()
       })
     } else {
       sdk.client.session
