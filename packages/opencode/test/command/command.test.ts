@@ -105,4 +105,38 @@ from mimocode`,
       },
     })
   })
+
+  // 兜底：单个插件的畸形 command 文件（frontmatter 合法但字段类型非法）
+  // 不应打挂整个 command 服务——与 skill 的 safeParse+return 策略一致。
+  test("malformed command file does not crash command service", async () => {
+    // subtask 应是 boolean，写字符串触发 schema 失败
+    await writePluginCommand("bad-plugin", "broken", `---
+description: broken
+subtask: "yes"
+---
+should be skipped`)
+    // 同插件目录放一个好文件，验证它仍能加载
+    await writePluginCommand("bad-plugin", "good", `---
+description: good one
+---
+this works`)
+
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await Effect.gen(function* () {
+          const cmd = yield* Command.Service
+          const list = yield* cmd.list()
+          // 坏文件被跳过
+          expect(list.find((c) => c.name === "broken")).toBeUndefined()
+          // 好文件正常加载
+          const good = list.find((c) => c.name === "good")
+          expect(good?.description).toBe("good one")
+          // 内置 command 仍可用（未被打挂）
+          expect(list.find((c) => c.name === "init")).toBeDefined()
+        }).pipe(Effect.provide(layer), Effect.runPromise)
+      },
+    })
+  })
 })

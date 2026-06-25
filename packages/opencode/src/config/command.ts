@@ -8,7 +8,6 @@ import { Bus } from "@/bus"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import { configEntryNameFromPath } from "./entry-name"
-import { InvalidError } from "./error"
 import * as ConfigMarkdown from "./markdown"
 import { ConfigModelID } from "./model-id"
 
@@ -59,11 +58,12 @@ export async function load(dir: string) {
       template: md.content.trim(),
     }
     const parsed = Info.zod.safeParse(config)
-    if (parsed.success) {
-      result[config.name] = parsed.data
+    if (!parsed.success) {
+      // 与 skill 的 safeParse+return 一致：坏文件跳过，不让单个畸形 command 打挂整个 command 服务
+      log.warn("skipped invalid command", { path: item, issues: parsed.error.issues })
       continue
     }
-    throw new InvalidError({ path: item, issues: parsed.error.issues }, { cause: parsed.error })
+    result[config.name] = parsed.data
   }
   return result
 }

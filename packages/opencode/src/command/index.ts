@@ -224,9 +224,14 @@ export const layer = Layer.effect(
       const pluginCommands = yield* Effect.promise(async () => {
         const result: Record<string, ConfigCommand.Info> = {}
         for (const name of await readdir(pluginsRoot).catch(() => [] as string[])) {
-          const loaded = await ConfigCommand.load(path.join(pluginsRoot, name))
-          for (const [cmdName, cmd] of Object.entries(loaded)) {
-            if (!result[cmdName]) result[cmdName] = cmd
+          try {
+            const loaded = await ConfigCommand.load(path.join(pluginsRoot, name))
+            for (const [cmdName, cmd] of Object.entries(loaded)) {
+              if (!result[cmdName]) result[cmdName] = cmd
+            }
+          } catch (error) {
+            // 单个插件解析失败不拖垮其它插件，与 skill/MCP 的隔离粒度对齐
+            console.warn(`skipped commands from marketplace plugin "${name}"`, error)
           }
         }
         return result
