@@ -249,6 +249,7 @@ function show(api: TuiPluginApi) {
 
 function MarketplaceView(props: { api: TuiPluginApi }) {
   const size = useTerminalDimensions()
+  const t = useLanguage().t
 
   const [marketState, setMarketState] = createSignal<
     | { status: "loading" }
@@ -325,7 +326,7 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
   async function doInstall(plugin: MarketplacePlugin) {
     if (installing()) return
     setInstalling(plugin.name)
-    props.api.ui.toast({ variant: "info", message: `正在安装 ${plugin.name}...` })
+    props.api.ui.toast({ variant: "info", message: t("tui.marketplace.install.start").replace("{0}", plugin.name) })
 
     // source 由 onSelect 保证存在（无 source 已被拦截）
     try {
@@ -335,20 +336,23 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
         // 透传 result.error.message（如 schannel 握手失败 + 中文排查提示），
         // 避免只显示干巴巴的 code 让用户无从下手
         const detail = result.error instanceof Error ? `：${result.error.message}` : ""
-        props.api.ui.toast({ variant: "error", message: `安装失败：${result.code}${detail}` })
+        props.api.ui.toast({
+          variant: "error",
+          message: t("tui.marketplace.install.failed").replace("{0}", `${result.code}${detail}`),
+        })
         return
       }
       if (result.skipped) {
-        props.api.ui.toast({ variant: "info", message: `${plugin.name} 已安装，无需重复安装` })
+        props.api.ui.toast({ variant: "info", message: t("tui.marketplace.install.skipped").replace("{0}", plugin.name) })
         return
       }
-      props.api.ui.toast({ variant: "success", message: `已安装 ${plugin.name}，重启后生效` })
+      props.api.ui.toast({ variant: "success", message: t("tui.marketplace.install.success").replace("{0}", plugin.name) })
       void refreshInstalled()
     } catch (error) {
       // 兜底：downloadPlugin 内部已捕获已知错误并返回 { ok:false }，
       // 这里防御未预期异常，避免 installing 信号卡死或 TUI 崩溃
       const message = error instanceof Error ? error.message : String(error)
-      props.api.ui.toast({ variant: "error", message: `安装失败：${message}` })
+      props.api.ui.toast({ variant: "error", message: t("tui.marketplace.install.failed").replace("{0}", message) })
     } finally {
       setInstalling(undefined)
     }
@@ -361,8 +365,8 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     // 故不能用 DialogConfirm.show 的 Promise 形式）。
     props.api.ui.dialog.replace(() => (
       <DialogConfirm
-        title="Uninstall plugin"
-        message={`确定卸载 ${plugin.name}？该插件的目录将被删除，重启后 MCP/技能随之失效。`}
+        title={t("tui.marketplace.uninstall.title")}
+        message={t("tui.marketplace.uninstall.confirm").replace("{0}", plugin.name)}
         onConfirm={() => void runUninstall(plugin)}
         onCancel={() => showMarketplace(props.api)}
       />
@@ -374,16 +378,16 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     try {
       const result = await uninstallPlugin(plugin.name)
       if (!result.ok) {
-        props.api.ui.toast({ variant: "error", message: `卸载失败：${result.code}` })
+        props.api.ui.toast({ variant: "error", message: t("tui.marketplace.uninstall.failed").replace("{0}", result.code) })
       } else if (!result.removed) {
-        props.api.ui.toast({ variant: "info", message: `${plugin.name} 未安装` })
+        props.api.ui.toast({ variant: "info", message: t("tui.marketplace.uninstall.not_installed").replace("{0}", plugin.name) })
       } else {
-        props.api.ui.toast({ variant: "success", message: `已卸载 ${plugin.name}，重启后完全生效` })
+        props.api.ui.toast({ variant: "success", message: t("tui.marketplace.uninstall.success").replace("{0}", plugin.name) })
         await refreshInstalled()
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      props.api.ui.toast({ variant: "error", message: `卸载失败：${message}` })
+      props.api.ui.toast({ variant: "error", message: t("tui.marketplace.uninstall.failed").replace("{0}", message) })
     } finally {
       setInstalling(undefined)
       // dialog.replace 渲染确认框时覆盖了市场列表，无论结果如何都要恢复
@@ -426,13 +430,13 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
 
   return (
     <DialogSelect
-      title="Plugin Marketplace"
+      title={t("tui.command.plugins.marketplace.title")}
       flat
       options={rows()}
       onSelect={(item) => {
         const plugin = plugins().find((p) => p.name === item.value)
         if (!plugin?.source) {
-          props.api.ui.toast({ variant: "info", message: "此插件无来源信息" })
+          props.api.ui.toast({ variant: "info", message: t("tui.marketplace.no_source") })
           return
         }
         void doInstall(plugin)
@@ -447,7 +451,7 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
             const plugin = plugins().find((p) => p.name === item.value)
             if (!plugin) return
             if (!installed()[plugin.name]) {
-              props.api.ui.toast({ variant: "info", message: `${plugin.name} 未安装` })
+              props.api.ui.toast({ variant: "info", message: t("tui.marketplace.uninstall.not_installed").replace("{0}", plugin.name) })
               return
             }
             void doUninstall(plugin)

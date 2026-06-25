@@ -399,6 +399,16 @@ export const dict = {
   "tui.command.plugins.list.title": "プラグイン",
   "tui.command.plugins.install.title": "プラグインをインストール",
   "tui.command.plugins.marketplace.title": "プラグインマーケットプレース",
+  "tui.marketplace.install.start": "{0} をインストール中...",
+  "tui.marketplace.install.failed": "インストール失敗: {0}",
+  "tui.marketplace.install.skipped": "{0} は既にインストール済みです",
+  "tui.marketplace.install.success": "{0} をインストールしました。再起動後に有効になります",
+  "tui.marketplace.uninstall.title": "プラグインをアンインストール",
+  "tui.marketplace.uninstall.confirm": "{0} をアンインストールしますか？プラグインディレクトリが削除され、再起動後に MCP/スキルが無効になります。",
+  "tui.marketplace.uninstall.failed": "アンインストール失敗: {0}",
+  "tui.marketplace.uninstall.not_installed": "{0} はインストールされていません",
+  "tui.marketplace.uninstall.success": "{0} をアンインストールしました。再起動後に完全に反映されます",
+  "tui.marketplace.no_source": "このプラグインにはソース情報がありません",
 
   // MiMo Auto (free) — TUI login dialog
   "tui.dialog.login.mimo_free": "MiMo Auto (free)",
