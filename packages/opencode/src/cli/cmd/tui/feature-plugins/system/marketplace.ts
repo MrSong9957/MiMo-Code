@@ -63,13 +63,9 @@ export type LoadResult =
   | { status: "ready"; plugins: MarketplacePlugin[] }
   | { status: "error"; message: string }
 
-// 插件已安装的统一判定：目录存在且含至少一个文件（含 dotfile）。
-// 这是 marketplace 功能内唯一的“已装”事实来源——下载器（决定是否 skip）与
-// TUI 已装标记（决定分组/✓）都调用它，消除两者各自实现导致的判定分歧。
-//
-// 必须传 dot:true：GitHub 类插件（如官方 MCP 插件）整包可能全是点文件
-// （.claude-plugin/plugin.json、.mcp.json），不传则 glob 默认忽略 dotfile，
-// 会把已装误判为未装（“提示已安装但分组看不到”的幽灵状态）。
+// 插件已安装的统一判定（marketplace 功能内唯一事实来源）：目录存在且含文件。
+// dot:true 是关键——GitHub 类插件（如官方 MCP）整包全是点文件，不传则 glob
+// 默认忽略 dotfile，与下载器的 skip 判定冲突（“提示已安装但分组看不到”）。
 export async function isPluginInstalled(dir: string): Promise<boolean> {
   if (!(await Filesystem.isDir(dir))) return false
   const files = await Glob.scan("**/*", { cwd: dir, include: "file", dot: true }).catch(() => [])

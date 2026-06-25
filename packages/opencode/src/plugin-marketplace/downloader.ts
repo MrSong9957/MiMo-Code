@@ -3,8 +3,8 @@ import { rename, rm } from "fs/promises"
 import { Global } from "@/global"
 import { Filesystem } from "@/util"
 import { Flock } from "@mimo-ai/shared/util/flock"
-import { Glob } from "@mimo-ai/shared/util/glob"
 import type { MarketplaceSource } from "@/cli/cmd/tui/feature-plugins/system/marketplace"
+import { isPluginInstalled } from "@/cli/cmd/tui/feature-plugins/system/marketplace"
 
 const MARKETPLACE_OWNER = "anthropics"
 const MARKETPLACE_REPO = "claude-plugins-official"
@@ -58,9 +58,8 @@ export type DownloadDeps = {
   fetch: (url: string | URL | Request, init?: RequestInit) => Promise<Response>
   write: (file: string, data: Uint8Array) => Promise<void>
   exists: (file: string) => Promise<boolean>
-  // 目录是否为空（不含任何条目）。用于把 skip 判定从“目录存在”收紧为“目录存在且非空”，
-  // 与 UI 的已装标记（Glob.scan 找文件）对齐，避免空目录残留被误判为已安装。
-  // 可选：仅当 exists 为 true 时才会被调用，故 exists 恒为 false 的测试无需提供。
+  // 目录是否为空。仅测试通过 deps 注入以 mock 边界场景（如空目录残留）；
+  // 生产路径不提供，isInstalled 直接走 isPluginInstalled（含 dotfile 处理）。
   isEmpty?: (dir: string) => Promise<boolean>
   remove: (dir: string) => Promise<void>
   // 执行 git 命令，返回是否成功（exit 0）和 stderr
@@ -77,10 +76,6 @@ const defaultDeps: DownloadDeps = {
   fetch: (url, init) => globalThis.fetch(url, init),
   write: (file, data) => Filesystem.write(file, data),
   exists: (file) => Filesystem.exists(file),
-  // 用 glob + dot:true 而非 readdir：与 marketplace.ts 的 isPluginInstalled 同源，
-  // 确保 GitHub 类插件（整包 dotfile）在下载器与 UI 两端判定一致。
-  isEmpty: async (dir) =>
-    (await Glob.scan("**/*", { cwd: dir, include: "file", dot: true }).then((f) => f.length === 0).catch(() => true)),
   remove: (dir) => rm(dir, { recursive: true, force: true }),
   git: async (args, opts) => {
     const proc = Bun.spawn(["git", ...args], { cwd: opts.cwd, stdout: "ignore", stderr: "pipe" })
@@ -160,12 +155,12 @@ export async function uninstallPlugin(
   }
 }
 
-// 已安装判定：目录存在且非空（含 dotfile）。defaultDeps 的 isEmpty 用 glob + dot:true，
-// 与 marketplace.ts 的 isPluginInstalled 同源，保证下载器 skip 判定与 UI 已装标记一致。
-// deps 注入的 isEmpty 仅供测试覆盖；生产路径与 UI 走同一 glob 语义。
+// 已安装判定。生产路径复用 marketplace.ts 的 isPluginInstalled（单一事实来源，
+// 含 dotfile 处理）；测试可通过 deps.isEmpty 注入来 mock 空目录等边界场景。
 async function isInstalled(dir: string, dep: DownloadDeps): Promise<boolean> {
+  if (!dep.isEmpty) return isPluginInstalled(dir)
   if (!(await dep.exists(dir))) return false
-  return dep.isEmpty ? !(await dep.isEmpty(dir)) : true
+  return !(await dep.isEmpty(dir))
 }
 
 async function runDownload(

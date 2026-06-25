@@ -262,17 +262,13 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     return s.status === "ready" ? s.plugins : []
   })
 
-  // 已装标记：name → 是否已安装。判定标准为目录存在且含文件（不强制 SKILL.md，
-  // 因插件类型多样）；空目录或清理残留不算已装，和市场标记/扫描状态对齐。
+  // 已装标记：name → 是否已安装（isPluginInstalled 判定）
   const [installed, setInstalled] = createSignal<Record<string, boolean>>({})
 
   async function refreshInstalled() {
     const pluginsDir = path.join(Global.Path.data, "plugins")
     const entries = await Promise.all(
-      plugins().map(async (p) => {
-        const installed = await isPluginInstalled(path.join(pluginsDir, p.name))
-        return [p.name, installed] as const
-      }),
+      plugins().map(async (p) => [p.name, await isPluginInstalled(path.join(pluginsDir, p.name))] as const),
     )
     setInstalled(Object.fromEntries(entries))
   }
@@ -379,23 +375,19 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
       const result = await uninstallPlugin(plugin.name)
       if (!result.ok) {
         props.api.ui.toast({ variant: "error", message: `卸载失败：${result.code}` })
-        showMarketplace(props.api)
-        return
-      }
-      if (!result.removed) {
+      } else if (!result.removed) {
         props.api.ui.toast({ variant: "info", message: `${plugin.name} 未安装` })
-        showMarketplace(props.api)
-        return
+      } else {
+        props.api.ui.toast({ variant: "success", message: `已卸载 ${plugin.name}，重启后完全生效` })
+        await refreshInstalled()
       }
-      props.api.ui.toast({ variant: "success", message: `已卸载 ${plugin.name}，重启后完全生效` })
-      await refreshInstalled()
-      showMarketplace(props.api)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       props.api.ui.toast({ variant: "error", message: `卸载失败：${message}` })
-      showMarketplace(props.api)
     } finally {
       setInstalling(undefined)
+      // dialog.replace 渲染确认框时覆盖了市场列表，无论结果如何都要恢复
+      showMarketplace(props.api)
     }
   }
 
