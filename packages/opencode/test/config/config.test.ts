@@ -88,6 +88,12 @@ async function writeClaudeConfig(file: string, config: object) {
   await Filesystem.write(file, JSON.stringify(config))
 }
 
+// 写 marketplace 插件的 .mcp.json（扁平结构：<serverName>:<config>，无 mcpServers 外层）
+async function writePluginMcp(pluginName: string, mcp: object) {
+  const dir = path.join(Global.Path.data, "plugins", pluginName)
+  await Filesystem.write(path.join(dir, ".mcp.json"), JSON.stringify(mcp))
+}
+
 async function check(map: (dir: string) => string) {
   if (process.platform !== "win32") return
   await using globalTmp = await tmpdir()
@@ -254,6 +260,103 @@ test("skips unsupported Claude Code MCP servers", async () => {
       })
       expect(config.mcp?.legacy).toBeUndefined()
       expect(config.mcp?.badArgs).toBeUndefined()
+    },
+  })
+})
+
+// marketplace 插件的 .mcp.json（扁平格式，type 用 http/stdio）在 config 加载时
+// 自动注册为 MCP，复用 fromClaude 转换。origin.type 标记为 marketplace，
+// 优先级低于 opencode/claude（同名不覆盖）。
+test("loads MCP servers from marketplace plugin .mcp.json", async () => {
+  await writePluginMcp("github", {
+    github: {
+      type: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      headers: {
+        Authorization: "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}",
+      },
+    },
+    filesystem: {
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/project"],
+    },
+  })
+
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      // http → remote，stdio（command）→ local，转换与 claude MCP 一致
+      expect(config.mcp?.github).toEqual({
+        type: "remote",
+        url: "https://api.githubcopilot.com/mcp/",
+        headers: {
+          Authorization: "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}",
+        },
+        enabled: true,
+      })
+      expect(config.mcp?.filesystem).toEqual({
+        type: "local",
+        command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/project"],
+        enabled: true,
+      })
+      // origin 标记为 marketplace，source 指向插件目录
+      expect(config.mcp_origins?.github).toEqual({
+        type: "marketplace",
+        source: path.join(Global.Path.data, "plugins", "github"),
+      })
+    },
+  })
+})
+
+test("marketplace MCP does not override native or Claude MCP with same name", async () => {
+  // 原生 opencode 配置的同名 server 优先级最高
+  await writeClaudeConfig(path.join(Global.Path.home, ".claude.json"), {
+    mcpServers: {
+      shared: {
+        type: "http",
+        url: "https://claude.example.com/mcp",
+      },
+    },
+  })
+  // marketplace 同名 server 不应覆盖
+  await writePluginMcp("dup", {
+    shared: {
+      type: "http",
+      url: "https://marketplace.example.com/mcp",
+    },
+    unique: {
+      type: "http",
+      url: "https://marketplace-unique.example.com/mcp",
+    },
+  })
+
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://opencode.ai/config.json",
+        mcp: {
+          shared: { type: "remote", url: "https://native.example.com/mcp" },
+        },
+      })
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      // native opencode 优先（其次 claude），marketplace 同名被跳过
+      expect(config.mcp?.shared).toEqual({
+        type: "remote",
+        url: "https://native.example.com/mcp",
+      })
+      // marketplace 独有的 server 正常注册
+      expect(config.mcp?.unique).toEqual({
+        type: "remote",
+        url: "https://marketplace-unique.example.com/mcp",
+        enabled: true,
+      })
     },
   })
 })

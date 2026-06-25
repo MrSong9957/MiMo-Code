@@ -703,6 +703,47 @@ export const layer = Layer.effect(
           }
         })
 
+        // 与 mergeClaudeMcp 同构，差异仅两点（此处保留独立函数，不合并，避免改动关键加载路径）：
+        //  1. 来源：扫 <data>/plugins/*/.mcp.json，每个文件顶层即 servers（扁平结构，无 mcpServers 外层）
+        //  2. origin.type 标 "marketplace"，优先级最低——任何已存在（opencode/claude）的同名 server 都不覆盖
+        const mergePluginMcp = Effect.fnUntraced(function* () {
+          const pluginsRoot = path.join(Global.Path.data, "plugins")
+          // 目录可能不存在（没装过任何 marketplace 插件）；readdir 失败时静默跳过
+          const names = yield* Effect.promise(() => fsNode.readdir(pluginsRoot).catch(() => [] as string[]))
+
+          for (const name of names) {
+            const pluginDir = path.join(pluginsRoot, name)
+            const source = pluginDir
+            // .mcp.json 是扁平结构：顶层即 <serverName>:<config>，直接当 servers 对象遍历
+            const data = yield* readClaudeConfig(path.join(pluginDir, ".mcp.json"))
+            if (!isRecord(data)) continue
+
+            for (const [serverName, server] of Object.entries(data)) {
+              const existing = result.mcp?.[serverName]
+              if (existing) {
+                log.info(`skipped marketplace MCP server "${serverName}" from plugin "${name}"; already exists.`)
+                continue
+              }
+
+              const converted = ConfigMCP.fromClaude(serverName, server)
+              if ("warning" in converted) {
+                log.warn(converted.warning)
+                continue
+              }
+
+              const next = ConfigParse.schema(Info, { mcp: { [serverName]: converted.config } }, source)
+              result.mcp = {
+                ...(result.mcp ?? {}),
+                [serverName]: next.mcp![serverName],
+              }
+              result.mcp_origins = {
+                ...(result.mcp_origins ?? {}),
+                [serverName]: { type: "marketplace", source },
+              }
+            }
+          }
+        })
+
         for (const [key, value] of Object.entries(auth)) {
           if (value.type === "wellknown") {
             const url = key.replace(/\/+$/, "")
@@ -876,6 +917,7 @@ export const layer = Layer.effect(
           yield* mergeClaudeMcp(path.join(Global.Path.home, ".claude.json"))
           yield* mergeClaudeMcp(path.join(ctx.directory, ".claude.json"))
         }
+        yield* mergePluginMcp()
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {
           result.agent = mergeDeep(result.agent ?? {}, {
