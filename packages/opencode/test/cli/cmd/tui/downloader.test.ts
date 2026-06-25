@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import { mkdir, rm } from "fs/promises"
-import { downloadPlugin, type DownloadDeps } from "../../../../src/plugin-marketplace/downloader"
+import { downloadPlugin, uninstallPlugin, type DownloadDeps } from "../../../../src/plugin-marketplace/downloader"
 
 // 把 / 分隔的预期路径转成当前平台分隔符，便于跨平台断言
 function p(file: string): string {
@@ -59,7 +59,7 @@ describe("downloadPlugin", () => {
     ])
   })
 
-  test("skips download when target dir already exists", async () => {
+  test("skips download when target dir already exists and is non-empty", async () => {
     const fetched: string[] = []
     const wrote: string[] = []
     const deps: DownloadDeps = {
@@ -70,6 +70,7 @@ describe("downloadPlugin", () => {
         throw new Error("should not write")
       },
       exists: async (file) => file === p("/tmp/plugins/foo"),
+      isEmpty: async () => false,
       pluginsDir: p("/tmp/plugins"),
       lock: noopLock,
       remove: noopRemove,
@@ -83,6 +84,40 @@ describe("downloadPlugin", () => {
     expect(result.skipped).toBe(true)
     expect(fetched).toHaveLength(0)
     expect(wrote).toHaveLength(0)
+  })
+
+  // 注册表残留（空目录）不应被误判为已安装：下载器与 UI 的已装判定必须一致
+  // （目录存在且非空），否则会出现“提示已安装但无分组无标记”的幽灵状态。
+  test("does not skip when target dir exists but is empty (registry residue)", async () => {
+    const tree = {
+      tree: [{ path: "plugins/foo/SKILL.md", type: "blob" }],
+    }
+    const wrote: string[] = []
+    const deps: DownloadDeps = {
+      fetch: (async (url: string | URL | Request) => {
+        const s = url.toString()
+        if (s.includes("/git/trees/")) return Response.json(tree)
+        return new Response("content")
+      }) as unknown as DownloadDeps["fetch"],
+      write: async (file) => {
+        wrote.push(file)
+      },
+      // 目录存在但 isEmpty 报告为空 → 视为残留，必须重新下载
+      exists: async (file) => file === p("/tmp/plugins/foo"),
+      isEmpty: async () => true,
+      pluginsDir: p("/tmp/plugins"),
+      lock: noopLock,
+      remove: noopRemove,
+      git: noopGit,
+    }
+
+    const result = await downloadPlugin("foo", { kind: "relative", path: "./plugins/foo" }, deps)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.skipped).toBe(false)
+    // 实际执行了下载写盘
+    expect(wrote).toHaveLength(1)
   })
 
   test("returns tree_fetch_failed when trees API errors", async () => {
@@ -286,6 +321,32 @@ describe("downloadPlugin (git sources)", () => {
     expect(gitCalls[0]).toContain("https://github.com/x/y.git")
     expect(gitCalls.some((a) => a[0] === "fetch" && a.includes("772aaa20"))).toBe(true)
     expect(gitCalls.some((a) => a[0] === "checkout" && a.includes("772aaa20"))).toBe(true)
+  })
+
+  // git source 同样：目录存在但空（注册表残留）不应误判 skip，
+  // 否则用户装 GitHub 插件会看到“提示已安装但无分组无标记”的幽灵状态。
+  test("git source does not skip when target dir exists but is empty", async () => {
+    const gitCalls: string[][] = []
+    const pluginsDir = p("/tmp/plugins")
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      // 目录存在但空 → 视为残留，必须重新 clone
+      exists: async (file) => file === path.join(pluginsDir, "foo"),
+      isEmpty: async () => true,
+      remove: realRemove,
+      git: mockGit(gitCalls, pluginsDir, "foo"),
+      pluginsDir,
+      lock: noopLock,
+    }
+
+    const result = await downloadPlugin("foo", { kind: "url", url: "https://github.com/x/y.git" }, deps)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.skipped).toBe(false)
+    // 实际执行了 clone（没有被残留目录拦截）
+    expect(gitCalls.some((a) => a[0] === "clone")).toBe(true)
   })
 
   test("git-subdir source uses sparse-checkout for subdir", async () => {
@@ -576,4 +637,55 @@ describe("downloadPlugin (git sources)", () => {
     const message = result.error instanceof Error ? result.error.message : ""
     expect(message).toContain("schannel")
   }, 15000)
+})
+
+describe("uninstallPlugin", () => {
+  // 用真实临时目录测删除，避免 mock rm 逻辑
+  const realRemove = (dir: string) => rm(dir, { recursive: true, force: true })
+
+  test("removes existing plugin directory", async () => {
+    const pluginsDir = p(path.join(import.meta.dir, ".tmp-uninstall-exists"))
+    const pluginDir = path.join(pluginsDir, "foo")
+    await mkdir(pluginDir, { recursive: true })
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => true,
+      remove: realRemove,
+      git: noopGit,
+      pluginsDir,
+      lock: noopLock,
+    }
+
+    const result = await uninstallPlugin("foo", deps)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.removed).toBe(true)
+    expect(result.dir).toBe(pluginDir)
+    // 目录确实被删了
+    const { existsSync } = await import("fs")
+    expect(existsSync(pluginDir)).toBe(false)
+    await realRemove(pluginsDir)
+  })
+
+  test("reports removed=false when plugin was not installed", async () => {
+    const pluginsDir = p(path.join(import.meta.dir, ".tmp-uninstall-absent"))
+    const deps: DownloadDeps = {
+      fetch: async () => new Response(""),
+      write: async () => {},
+      exists: async () => false,
+      remove: realRemove,
+      git: noopGit,
+      pluginsDir,
+      lock: noopLock,
+    }
+
+    const result = await uninstallPlugin("never-installed", deps)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.removed).toBe(false)
+    await realRemove(pluginsDir)
+  })
 })

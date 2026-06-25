@@ -3,6 +3,7 @@ import { rename, rm } from "fs/promises"
 import { Global } from "@/global"
 import { Filesystem } from "@/util"
 import { Flock } from "@mimo-ai/shared/util/flock"
+import { Glob } from "@mimo-ai/shared/util/glob"
 import type { MarketplaceSource } from "@/cli/cmd/tui/feature-plugins/system/marketplace"
 
 const MARKETPLACE_OWNER = "anthropics"
@@ -57,6 +58,10 @@ export type DownloadDeps = {
   fetch: (url: string | URL | Request, init?: RequestInit) => Promise<Response>
   write: (file: string, data: Uint8Array) => Promise<void>
   exists: (file: string) => Promise<boolean>
+  // 目录是否为空（不含任何条目）。用于把 skip 判定从“目录存在”收紧为“目录存在且非空”，
+  // 与 UI 的已装标记（Glob.scan 找文件）对齐，避免空目录残留被误判为已安装。
+  // 可选：仅当 exists 为 true 时才会被调用，故 exists 恒为 false 的测试无需提供。
+  isEmpty?: (dir: string) => Promise<boolean>
   remove: (dir: string) => Promise<void>
   // 执行 git 命令，返回是否成功（exit 0）和 stderr
   git: (args: string[], opts: { cwd: string }) => Promise<{ ok: boolean; stderr: string }>
@@ -72,6 +77,10 @@ const defaultDeps: DownloadDeps = {
   fetch: (url, init) => globalThis.fetch(url, init),
   write: (file, data) => Filesystem.write(file, data),
   exists: (file) => Filesystem.exists(file),
+  // 用 glob + dot:true 而非 readdir：与 marketplace.ts 的 isPluginInstalled 同源，
+  // 确保 GitHub 类插件（整包 dotfile）在下载器与 UI 两端判定一致。
+  isEmpty: async (dir) =>
+    (await Glob.scan("**/*", { cwd: dir, include: "file", dot: true }).then((f) => f.length === 0).catch(() => true)),
   remove: (dir) => rm(dir, { recursive: true, force: true }),
   git: async (args, opts) => {
     const proc = Bun.spawn(["git", ...args], { cwd: opts.cwd, stdout: "ignore", stderr: "pipe" })
@@ -128,13 +137,44 @@ export async function downloadPlugin(
   }
 }
 
+export type UninstallResult =
+  | { ok: true; dir: string; removed: boolean }
+  | { ok: false; code: "remove_failed"; error?: unknown }
+
+// 卸载插件：删除 pluginsDir/<name>/。MCP/skill 在 config/skill 加载时扫描该目录，
+// 删除后重启即自然消失，无需额外清理配置（mcp_origins 是运行时态不持久化）。
+// removed=false 表示本来就没装（目录不存在），非错误——便于 UI 区分提示。
+export async function uninstallPlugin(
+  name: string,
+  dep: DownloadDeps = defaultDeps,
+): Promise<UninstallResult> {
+  const dir = path.join(dep.pluginsDir, name)
+  try {
+    await using _ = await dep.lock(name)
+    const existed = await dep.exists(dir)
+    if (!existed) return { ok: true, dir, removed: false }
+    await dep.remove(dir)
+    return { ok: true, dir, removed: true }
+  } catch (error) {
+    return { ok: false, code: "remove_failed", error }
+  }
+}
+
+// 已安装判定：目录存在且非空（含 dotfile）。defaultDeps 的 isEmpty 用 glob + dot:true，
+// 与 marketplace.ts 的 isPluginInstalled 同源，保证下载器 skip 判定与 UI 已装标记一致。
+// deps 注入的 isEmpty 仅供测试覆盖；生产路径与 UI 走同一 glob 语义。
+async function isInstalled(dir: string, dep: DownloadDeps): Promise<boolean> {
+  if (!(await dep.exists(dir))) return false
+  return dep.isEmpty ? !(await dep.isEmpty(dir)) : true
+}
+
 async function runDownload(
   source: { kind: "relative"; path: string },
   dir: string,
   dep: DownloadDeps,
 ): Promise<DownloadResult> {
-  // 持锁后复查：等锁期间可能已被其他进程装好
-  if (await dep.exists(dir)) return { ok: true, dir, skipped: true }
+  // 持锁后复查：等锁期间可能已被其他进程装好（且装完整，非空）
+  if (await isInstalled(dir, dep)) return { ok: true, dir, skipped: true }
 
   // source.path 形如 "./plugins/foo"，去掉 "./" 得到仓库内相对路径用于 tree 过滤
   const prefix = source.path.replace(/^\.\//, "")
@@ -192,7 +232,7 @@ async function runGitDownload(
   dir: string,
   dep: DownloadDeps,
 ): Promise<DownloadResult> {
-  if (await dep.exists(dir)) return { ok: true, dir, skipped: true }
+  if (await isInstalled(dir, dep)) return { ok: true, dir, skipped: true }
 
   const { url, sha, subdir } = gitSourceParams(source)
   const sparse = subdir !== undefined

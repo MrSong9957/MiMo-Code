@@ -1,5 +1,7 @@
-import { describe, expect, test } from "bun:test"
-import { parseMarketplaceJson, parsePluginSource } from "../../../../src/cli/cmd/tui/feature-plugins/system/marketplace"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdir, rm, writeFile } from "fs/promises"
+import { join } from "path"
+import { isPluginInstalled, parseMarketplaceJson, parsePluginSource } from "../../../../src/cli/cmd/tui/feature-plugins/system/marketplace"
 
 describe("parseMarketplaceJson", () => {
   test("maps entries to name + description", () => {
@@ -112,5 +114,40 @@ describe("parsePluginSource", () => {
     expect(parsePluginSource("")).toBeUndefined()
     expect(parsePluginSource(42)).toBeUndefined()
     expect(parsePluginSource([])).toBeUndefined()
+  })
+})
+
+describe("isPluginInstalled", () => {
+  // 用真实临时目录测，避免 mock，覆盖 GitHub 插件整包全是 dotfile 的真实场景。
+  const tmp = join(import.meta.dir, ".tmp-isinstalled")
+  const dir = join(tmp, "plugin")
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  test("returns false when dir does not exist", async () => {
+    expect(await isPluginInstalled(join(tmp, "nope"))).toBe(false)
+  })
+
+  test("returns false when dir exists but is empty", async () => {
+    await mkdir(dir, { recursive: true })
+    expect(await isPluginInstalled(dir)).toBe(false)
+  })
+
+  // 核心回归：GitHub 官方 MCP 插件整包全是点文件（.claude-plugin/plugin.json、
+  // .mcp.json），不含任何普通文件。glob 默认忽略 dotfile 会判 0 文件→未装，
+  // 与下载器 readdir 判定冲突，导致“提示已安装但分组看不到”。
+  test("returns true when dir contains only dotfiles", async () => {
+    await mkdir(join(dir, ".claude-plugin"), { recursive: true })
+    await writeFile(join(dir, ".claude-plugin", "plugin.json"), "{}")
+    await writeFile(join(dir, ".mcp.json"), "{}")
+    expect(await isPluginInstalled(dir)).toBe(true)
+  })
+
+  test("returns true when dir contains a regular file", async () => {
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, "SKILL.md"), "# skill")
+    expect(await isPluginInstalled(dir)).toBe(true)
   })
 })
