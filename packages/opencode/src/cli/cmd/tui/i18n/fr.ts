@@ -450,6 +450,7 @@ export const dict = {
   "tui.command.tips.toggle.hide": "Masquer les astuces",
   "tui.command.plugins.list.title": "Plugins",
   "tui.command.plugins.install.title": "Installer un plugin",
+  "tui.command.plugins.marketplace.title": "Marketplace de plugins",
 
   // MiMo Auto (free) — TUI login dialog
   "tui.dialog.login.mimo_free": "MiMo Auto (free)",

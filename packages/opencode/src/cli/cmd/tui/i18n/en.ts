@@ -396,6 +396,7 @@ export const dict: Record<string, string> = {
   "tui.command.tips.toggle.hide": "Hide tips",
   "tui.command.plugins.list.title": "Plugins",
   "tui.command.plugins.install.title": "Install plugin",
+  "tui.command.plugins.marketplace.title": "Plugin marketplace",
   "tui.dialog.login.title": "Select provider",
   "tui.dialog.login.xiaomi": "Xiaomi",
   "tui.dialog.login.xiaomi.desc": "(Recommended)",

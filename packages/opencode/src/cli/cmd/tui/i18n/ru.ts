@@ -462,6 +462,7 @@ export const dict = {
   "tui.command.tips.toggle.hide": "Скрыть подсказки",
   "tui.command.plugins.list.title": "Плагины",
   "tui.command.plugins.install.title": "Установить плагин",
+  "tui.command.plugins.marketplace.title": "Маркетплейс плагинов",
 
   // MiMo Auto (free) — TUI login dialog
   "tui.dialog.login.mimo_free": "MiMo Auto (free)",

@@ -385,6 +385,7 @@ export const dict = {
   "tui.command.tips.toggle.hide": "隱藏 Tips",
   "tui.command.plugins.list.title": "外掛",
   "tui.command.plugins.install.title": "安裝外掛",
+  "tui.command.plugins.marketplace.title": "外掛市集",
 
   // Question i18n — plan_enter
   "tui.question.plan_enter.question": "是否切換到 plan 模式進行結構化規劃？",

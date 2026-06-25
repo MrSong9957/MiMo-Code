@@ -398,6 +398,7 @@ export const dict = {
   "tui.command.tips.toggle.hide": "ヒントを非表示",
   "tui.command.plugins.list.title": "プラグイン",
   "tui.command.plugins.install.title": "プラグインをインストール",
+  "tui.command.plugins.marketplace.title": "プラグインマーケットプレース",
 
   // MiMo Auto (free) — TUI login dialog
   "tui.dialog.login.mimo_free": "MiMo Auto (free)",

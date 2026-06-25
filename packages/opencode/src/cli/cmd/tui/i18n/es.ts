@@ -463,6 +463,7 @@ export const dict = {
   "tui.command.tips.toggle.hide": "Ocultar sugerencias",
   "tui.command.plugins.list.title": "Plugins",
   "tui.command.plugins.install.title": "Instalar plugin",
+  "tui.command.plugins.marketplace.title": "Marketplace de plugins",
 
   // Question i18n — plan_enter
   "tui.question.plan_enter.question": "¿Desea cambiar al modo plan para una planificación estructurada?",

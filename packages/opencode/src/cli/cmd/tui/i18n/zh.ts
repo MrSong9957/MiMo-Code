@@ -385,6 +385,7 @@ export const dict = {
   "tui.command.tips.toggle.hide": "隐藏 Tips",
   "tui.command.plugins.list.title": "插件",
   "tui.command.plugins.install.title": "安装插件",
+  "tui.command.plugins.marketplace.title": "插件市场",
   "tui.dialog.login.title": "选择服务商",
   "tui.dialog.login.xiaomi": "小米",
   "tui.dialog.login.xiaomi.desc": "（推荐）",
