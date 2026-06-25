@@ -408,7 +408,7 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
           title: p.name,
           value: p.name,
           description: p.description,
-          category: mark[p.name] ? "Installed" : "Available",
+          category: mark[p.name] ? t("tui.marketplace.category.installed") : t("tui.marketplace.category.available"),
           gutter: mark[p.name] ? (
             <text fg={props.api.theme.current.success} attributes={TextAttributes.BOLD}>
               ✓

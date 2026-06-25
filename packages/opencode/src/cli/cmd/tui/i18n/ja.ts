@@ -399,6 +399,8 @@ export const dict = {
   "tui.command.plugins.list.title": "プラグイン",
   "tui.command.plugins.install.title": "プラグインをインストール",
   "tui.command.plugins.marketplace.title": "プラグインマーケットプレース",
+  "tui.marketplace.category.installed": "インストール済み",
+  "tui.marketplace.category.available": "利用可能",
   "tui.marketplace.install.start": "{0} をインストール中...",
   "tui.marketplace.install.failed": "インストール失敗: {0}",
   "tui.marketplace.install.skipped": "{0} は既にインストール済みです",

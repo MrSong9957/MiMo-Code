@@ -386,6 +386,8 @@ export const dict = {
   "tui.command.plugins.list.title": "外掛",
   "tui.command.plugins.install.title": "安裝外掛",
   "tui.command.plugins.marketplace.title": "外掛市集",
+  "tui.marketplace.category.installed": "已安裝",
+  "tui.marketplace.category.available": "未安裝",
   "tui.marketplace.install.start": "正在安裝 {0}...",
   "tui.marketplace.install.failed": "安裝失敗：{0}",
   "tui.marketplace.install.skipped": "{0} 已安裝，無需重複安裝",

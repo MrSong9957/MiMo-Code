@@ -397,6 +397,8 @@ export const dict: Record<string, string> = {
   "tui.command.plugins.list.title": "Plugins",
   "tui.command.plugins.install.title": "Install plugin",
   "tui.command.plugins.marketplace.title": "Plugin marketplace",
+  "tui.marketplace.category.installed": "Installed",
+  "tui.marketplace.category.available": "Available",
   "tui.marketplace.install.start": "Installing {0}...",
   "tui.marketplace.install.failed": "Install failed: {0}",
   "tui.marketplace.install.skipped": "{0} is already installed, no need to reinstall",

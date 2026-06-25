@@ -451,6 +451,8 @@ export const dict = {
   "tui.command.plugins.list.title": "Plugins",
   "tui.command.plugins.install.title": "Installer un plugin",
   "tui.command.plugins.marketplace.title": "Marketplace de plugins",
+  "tui.marketplace.category.installed": "Installés",
+  "tui.marketplace.category.available": "Disponibles",
   "tui.marketplace.install.start": "Installation de {0}...",
   "tui.marketplace.install.failed": "Échec de l'installation : {0}",
   "tui.marketplace.install.skipped": "{0} est déjà installé, réinstallation inutile",

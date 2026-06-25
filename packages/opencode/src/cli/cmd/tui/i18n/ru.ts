@@ -463,6 +463,8 @@ export const dict = {
   "tui.command.plugins.list.title": "Плагины",
   "tui.command.plugins.install.title": "Установить плагин",
   "tui.command.plugins.marketplace.title": "Маркетплейс плагинов",
+  "tui.marketplace.category.installed": "Установленные",
+  "tui.marketplace.category.available": "Доступные",
   "tui.marketplace.install.start": "Установка {0}...",
   "tui.marketplace.install.failed": "Ошибка установки: {0}",
   "tui.marketplace.install.skipped": "{0} уже установлен, переустановка не требуется",
