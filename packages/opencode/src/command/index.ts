@@ -2,11 +2,15 @@ import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect"
 import { EffectBridge } from "@/effect"
 import { Flag } from "@/flag/flag"
+import { Global } from "@/global"
 import type { InstanceContext } from "@/project/instance"
 import { SessionID, MessageID } from "@/session/schema"
 import { Effect, Layer, Context } from "effect"
+import path from "path"
+import { readdir } from "fs/promises"
 import z from "zod"
 import { Config } from "../config"
+import { ConfigCommand } from "../config/command"
 import { MCP } from "../mcp"
 import { Skill } from "../skill"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
@@ -210,6 +214,36 @@ export const layer = Layer.effect(
           },
           subtask: command.subtask,
           hints: hints(command.template),
+        }
+      }
+
+      // marketplace 插件的 markdown command（如 code-review）：与 skill 同构，直接扫
+      // <data>/plugins/*/，不经 config 缓存——这样 /reload-plugins 后 command.reload()
+      // 能即时生效。优先级同 config.command（低于 .mimocode，因上面先注册）。
+      const pluginsRoot = path.join(Global.Path.data, "plugins")
+      const pluginCommands = yield* Effect.promise(async () => {
+        const result: Record<string, ConfigCommand.Info> = {}
+        for (const name of await readdir(pluginsRoot).catch(() => [] as string[])) {
+          const loaded = await ConfigCommand.load(path.join(pluginsRoot, name))
+          for (const [cmdName, cmd] of Object.entries(loaded)) {
+            if (!result[cmdName]) result[cmdName] = cmd
+          }
+        }
+        return result
+      })
+      for (const [cmdName, cmd] of Object.entries(pluginCommands)) {
+        if (commands[cmdName]) continue
+        commands[cmdName] = {
+          name: cmdName,
+          description: cmd.description,
+          source: "command",
+          get template() {
+            return cmd.template
+          },
+          agent: cmd.agent,
+          model: cmd.model,
+          subtask: cmd.subtask,
+          hints: hints(cmd.template),
         }
       }
 
