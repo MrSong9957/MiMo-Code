@@ -3228,9 +3228,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const visibleText = input.arguments.trim()
           ? `/${input.command} ${input.arguments}`
           : `/${input.command}`
+        // 不直接注入 SKILL.md 内容（裸 <skill_content> 缺乏执行语义，非 Claude 模型
+        // 易当作参考信息而非待执行指令）。改为指示模型调用 skill tool 加载——
+        // skill tool 的输出含 title "Loaded skill" 且 system prompt 已教
+        // "follow it directly"，遵循度更高，且复用 skill_files 列表。
         const skillPart = {
           type: "text" as const,
-          text: `<skill_content name="${input.command}">\n${templateCommand}\n</skill_content>`,
+          text: `The user invoked the /${input.command} command, which maps to the "${input.command}" skill. Invoke the skill tool with name "${input.command}" now to load its instructions, then follow them to complete the task.`,
           synthetic: true,
         }
         const attachments = templateParts.filter((p): p is Exclude<typeof p, { type: "text" }> => p.type !== "text")

@@ -1,16 +1,16 @@
 import path from "path"
 import { Keybind } from "@/util"
-import { Filesystem } from "@/util"
 import { Global } from "@/global"
-import { Glob } from "@mimo-ai/shared/util/glob"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiPluginStatus } from "@mimo-ai/plugin/tui"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
+import { TextAttributes } from "@opentui/core"
 import { fileURLToPath } from "url"
 import { DialogSelect, type DialogSelectOption } from "@tui/ui/dialog-select"
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { useLanguage } from "@tui/context/language"
-import { loadMarketplace, type LoadResult, type MarketplacePlugin } from "./marketplace"
-import { downloadPlugin } from "@/plugin-marketplace/downloader"
+import { isPluginInstalled, loadMarketplace, type LoadResult, type MarketplacePlugin } from "./marketplace"
+import { downloadPlugin, uninstallPlugin } from "@/plugin-marketplace/downloader"
+import { DialogConfirm } from "@tui/ui/dialog-confirm"
 
 const id = "internal:plugin-manager"
 const key = Keybind.parse("space").at(0)
@@ -270,10 +270,8 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     const pluginsDir = path.join(Global.Path.data, "plugins")
     const entries = await Promise.all(
       plugins().map(async (p) => {
-        const dir = path.join(pluginsDir, p.name)
-        if (!(await Filesystem.isDir(dir))) return [p.name, false] as const
-        const files = await Glob.scan("**/*", { cwd: dir, include: "file" }).catch(() => [])
-        return [p.name, files.length > 0] as const
+        const installed = await isPluginInstalled(path.join(pluginsDir, p.name))
+        return [p.name, installed] as const
       }),
     )
     setInstalled(Object.fromEntries(entries))
@@ -360,18 +358,67 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
     }
   }
 
+  function doUninstall(plugin: MarketplacePlugin) {
+    if (installing()) return
+    // 二次确认：卸载即删目录，防误操作。用 dialog.replace 渲染 DialogConfirm，
+    // onConfirm 回调里执行删除（api.ui.dialog 是包装对象，不含完整 DialogContext，
+    // 故不能用 DialogConfirm.show 的 Promise 形式）。
+    props.api.ui.dialog.replace(() => (
+      <DialogConfirm
+        title="Uninstall plugin"
+        message={`确定卸载 ${plugin.name}？该插件的目录将被删除，重启后 MCP/技能随之失效。`}
+        onConfirm={() => void runUninstall(plugin)}
+        onCancel={() => showMarketplace(props.api)}
+      />
+    ))
+  }
+
+  async function runUninstall(plugin: MarketplacePlugin) {
+    setInstalling(plugin.name)
+    try {
+      const result = await uninstallPlugin(plugin.name)
+      if (!result.ok) {
+        props.api.ui.toast({ variant: "error", message: `卸载失败：${result.code}` })
+        showMarketplace(props.api)
+        return
+      }
+      if (!result.removed) {
+        props.api.ui.toast({ variant: "info", message: `${plugin.name} 未安装` })
+        showMarketplace(props.api)
+        return
+      }
+      props.api.ui.toast({ variant: "success", message: `已卸载 ${plugin.name}，重启后完全生效` })
+      await refreshInstalled()
+      showMarketplace(props.api)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      props.api.ui.toast({ variant: "error", message: `卸载失败：${message}` })
+      showMarketplace(props.api)
+    } finally {
+      setInstalling(undefined)
+    }
+  }
+
   const rows = createMemo(() => {
     const s = marketState()
     const mark = installed()
     if (s.status === "ready") {
-      return s.plugins.map((p) => ({
-        title: p.name,
-        value: p.name,
-        description: p.description,
-        footer: mark[p.name]
-          ? <span style={{ fg: props.api.theme.current.success }}>✓ installed</span>
-          : undefined,
-      }))
+      // 已装插件单独分组并置顶。gutter 放绿色加粗 ✓：Option 组件会把 footer
+      // 的颜色强制覆盖成 muted（dialog-select.tsx），且 flat 搜索时 footer 还会
+      // 被 category 文本替换，唯有 gutter 颜色不受覆盖，搜索/分组两种场景都显眼。
+      return [...s.plugins]
+        .sort((a, b) => (mark[a.name] ? 0 : 1) - (mark[b.name] ? 0 : 1))
+        .map((p) => ({
+          title: p.name,
+          value: p.name,
+          description: p.description,
+          category: mark[p.name] ? "Installed" : "Available",
+          gutter: mark[p.name] ? (
+            <text fg={props.api.theme.current.success} attributes={TextAttributes.BOLD}>
+              ✓
+            </text>
+          ) : undefined,
+        }))
     }
     // loading / error：列表区显示一条占位条目，保持界面框架完整
     const message =
@@ -400,6 +447,20 @@ function MarketplaceView(props: { api: TuiPluginApi }) {
       }}
       keybind={[
         { title: "refresh", keybind: Keybind.parse("ctrl+r").at(0), onTrigger: doRefresh },
+        {
+          title: "uninstall",
+          keybind: Keybind.parse("ctrl+d").at(0),
+          disabled: !!installing(),
+          onTrigger: (item) => {
+            const plugin = plugins().find((p) => p.name === item.value)
+            if (!plugin) return
+            if (!installed()[plugin.name]) {
+              props.api.ui.toast({ variant: "info", message: `${plugin.name} 未安装` })
+              return
+            }
+            void doUninstall(plugin)
+          },
+        },
       ]}
     />
   )
